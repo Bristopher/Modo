@@ -40,7 +40,8 @@
 			"oauth_client_secret": "GENERATE"
 		},
 		"marketing": {
-			"enabled": false
+			"enabled": false,
+			"secret_key_base": "GENERATE"
 		},
 		"gateway": {
 			"port": 8082,

@@ -79,7 +79,9 @@ if (svc.admin) {
 	setIfNeeded(svc.admin, 'secret_key_base', () => hex(32), 'services.admin.secret_key_base');
 	setIfNeeded(svc.admin, 'oauth_client_secret', () => hex(32), 'services.admin.oauth_client_secret');
 }
-if (svc.marketing && svc.marketing.enabled) {
+// Schema requires marketing.secret_key_base even when marketing is DISABLED, so seed it
+// whenever the marketing object exists — not only when enabled.
+if (svc.marketing) {
 	setIfNeeded(svc.marketing, 'secret_key_base', () => hex(32), 'services.marketing.secret_key_base');
 }
 if (svc.gateway) {
