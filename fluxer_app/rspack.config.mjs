@@ -250,7 +250,10 @@ export default () => {
 
 		output: {
 			path: DIST_DIR,
-			publicPath: isProduction ? `${CDN_ENDPOINT}/` : '/',
+			// Self-host patch: upstream serves JS/CSS from the public CDN in production.
+			// Self-hosted instances serve the bundle from their own origin, so emit
+			// origin-relative asset URLs. Emoji/font assets still fall back to the CDN.
+			publicPath: '/',
 			workerPublicPath: '/',
 			filename: (pathData) => {
 				if (pathData.chunk?.name === 'sw') {

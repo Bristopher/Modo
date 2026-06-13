@@ -1,10 +1,11 @@
 {
 	"$schema": "../packages/config/src/ConfigSchema.json",
 	"env": "production",
+	"_comment": "Production self-host template. base_domain MUST match the FLUXER_BUILD_CONFIG build arg (.env BASE_DOMAIN) — rspack bakes these endpoint URLs into the SPA at build time. TLS is terminated by your Unraid reverse proxy (NPM/SWAG); Caddy inside the stack speaks plain http on 8080. public_scheme/public_port describe the PUBLIC URL your browser hits (https/443), not Caddy's internal port.",
 	"domain": {
-		"base_domain": "localhost",
-		"public_scheme": "http",
-		"public_port": 8080,
+		"base_domain": "bigweld.duckdns.org",
+		"public_scheme": "https",
+		"public_port": 443,
 		"endpoint_overrides": {
 			"static_cdn": "https://fluxerstatic.com/static"
 		}
@@ -20,7 +21,7 @@
 	"s3": {
 		"access_key_id": "GENERATE",
 		"secret_access_key": "GENERATE",
-		"endpoint": "http://127.0.0.1:8080/s3"
+		"endpoint": "https://bigweld.duckdns.org/s3"
 	},
 	"services": {
 		"server": {
@@ -64,7 +65,7 @@
 		"email": {
 			"enabled": true,
 			"provider": "smtp",
-			"from_email": "noreply@localhost",
+			"from_email": "noreply@bigweld.duckdns.org",
 			"smtp": {
 				"host": "mailpit",
 				"port": 1025,

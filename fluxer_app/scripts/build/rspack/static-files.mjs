@@ -20,7 +20,9 @@
 import {sources} from '@rspack/core';
 
 function normalizeEndpoint(staticCdnEndpoint) {
-	if (!staticCdnEndpoint) return '';
+	// Self-host patch: fall back to the public CDN so the PWA manifest icons resolve
+	// even when no static_cdn endpoint is configured for the instance.
+	if (!staticCdnEndpoint) return 'https://fluxerstatic.com';
 	return staticCdnEndpoint.endsWith('/') ? staticCdnEndpoint.slice(0, -1) : staticCdnEndpoint;
 }
 

@@ -37,9 +37,13 @@
 **/Thumbs.db
 **/yarn-debug.log*
 **/yarn-error.log*
-/fluxer_app/src/data/emojis.json
 /fluxer_app/src/locales/*/messages.js
 dev
 !fluxer_app/dist
 !fluxer_app/dist/**
 !fluxer_devops/cassandra/migrations
+# Self-host build patch: the broad **/build rule above strips fluxer_app/scripts/build,
+# which the rspack config imports at build time. Re-include it. emojis.json was also
+# explicitly ignored above (now removed) but is required by the app build.
+!fluxer_app/scripts/build
+!fluxer_app/scripts/build/**

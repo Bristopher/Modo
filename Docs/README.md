@@ -3,9 +3,12 @@
 Internal research notes for standing up and continuing development of a self-hosted Fluxer
 instance from the public monorepo (`github.com/fluxerapp/fluxer`).
 
-> Status as of **2026-06-12**: the upstream repo explicitly says self-hosting is **pre-release**
-> ("TBD" in the README). These docs capture what actually works today, what is missing, and the
-> concrete next steps to get a full instance running. See [02-self-hosting-status.md](./02-self-hosting-status.md).
+> Status as of **2026-06-13**: the upstream repo explicitly says self-hosting is **pre-release**
+> ("TBD" in the README), and the published server image is private + the Dockerfile is stale. We
+> applied **~14 source patches** (cross-referenced against two community guides) so the image
+> builds and runs from source — see **[11-build-patches-and-unraid.md](./11-build-patches-and-unraid.md)**.
+> These docs capture what works today, what is missing, and concrete next steps.
+> See [02-self-hosting-status.md](./02-self-hosting-status.md).
 
 ## Index
 
@@ -22,6 +25,7 @@ instance from the public monorepo (`github.com/fluxerapp/fluxer`).
 | [08-bootstrap-and-deployment.md](./08-bootstrap-and-deployment.md) | What `devenv up` bootstraps (auto-seeded secrets/keys) + how upstream CI ships images (gateway is build-only) |
 | [09-docker-compose-extended.md](./09-docker-compose-extended.md) | The extended `compose.yaml` (added NATS + gateway) — what changed, how to bring it up, remaining caveats |
 | [10-turnkey-localhost.md](./10-turnkey-localhost.md) | One-command local instance: Caddy + Mailpit override, localhost config, secret seeder, run steps (**not yet runtime-verified**) |
+| [11-build-patches-and-unraid.md](./11-build-patches-and-unraid.md) | **The ~14 source patches** that make the image build/run (from the PaulMColeman + mgabor3141 guides) + an **Unraid + reverse-proxy + duckdns** deployment walkthrough |
 
 ## Quick orientation
 

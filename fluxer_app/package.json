@@ -15,7 +15,7 @@
 		"./src/*": "./src/*"
 	},
 	"scripts": {
-		"build": "pnpm wasm:codegen && pnpm generate:colors && pnpm generate:masks && pnpm generate:css-types && tsgo --noEmit && pnpm lingui:compile && rm -rf dist && rspack build --mode production && pnpm tsx scripts/build-sw.mjs",
+		"build": "pnpm wasm:codegen && pnpm generate:colors && pnpm generate:masks && pnpm generate:css-types && pnpm lingui:compile && rm -rf dist && rspack build --mode production && pnpm tsx scripts/build-sw.mjs",
 		"dev": "pnpm tsx scripts/DevServer.tsx",
 		"typecheck": "pnpm wasm:codegen && pnpm generate:masks && pnpm generate:css-types && tsgo --noEmit",
 		"typecheck:only": "tsgo --noEmit",

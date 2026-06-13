@@ -21,7 +21,9 @@ services:
       fluxer_gateway:
         condition: service_healthy
     ports:
-      - '${PUBLIC_PORT:-8080}:8080'
+      # Host port your reverse proxy (NPM/SWAG) forwards to. NOT the public URL port —
+      # that is PUBLIC_PORT (baked into the build/config). For localhost both are 8080.
+      - '${HOST_HTTP_PORT:-8080}:8080'
     volumes:
       - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -65,6 +67,12 @@ services:
     build:
       context: .
       dockerfile: fluxer_server/Dockerfile
+      args:
+        # rspack bakes these endpoint URLs into the SPA bundle at build time, so they
+        # MUST match config.json's domain block. Driven by .env — defaults to localhost.
+        # static_cdn points at the public CDN so emoji/font assets resolve.
+        FLUXER_BUILD_CONFIG: >-
+          {"domain":{"base_domain":"${BASE_DOMAIN:-localhost}","public_scheme":"${PUBLIC_SCHEME:-http}","public_port":${PUBLIC_PORT:-8080},"endpoint_overrides":{"static_cdn":"https://fluxerstatic.com/static"}}}
     image: fluxer-server:local
     ports: !reset []
   fluxer_gateway:

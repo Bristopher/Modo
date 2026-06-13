@@ -48,6 +48,11 @@ COPY fluxer_server/ ./fluxer_server/
 
 RUN pnpm --filter @fluxer/marketing build:css
 
+# Self-host patch: the admin panel CSS is never compiled upstream, so /admin renders
+# unstyled. Build it here (admin is needed to grant premium / manage the instance).
+# Package is @fluxer/admin (packages/admin); its build:css runs tailwind → public/static/app.css.
+RUN pnpm --filter @fluxer/admin build:css
+
 COPY fluxer_media_proxy/data/model.onnx ./fluxer_media_proxy/data/model.onnx
 
 RUN cd fluxer_server && pnpm typecheck
@@ -82,9 +87,31 @@ RUN LOGGER_LEVEL=${LOGGER_LEVEL} envsubst '${LOGGER_LEVEL}' < fluxer_gateway/con
 
 FROM deps AS app-build
 
+# Self-host patch (Gotcha: missing wasm32 target). The frontend compiles a Rust crate
+# (crates/libfluxcore) to WASM via wasm-pack during `pnpm build`. The apt rustc has no
+# wasm32-unknown-unknown target, so install the rustup toolchain + target + wasm-pack.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+	curl ca-certificates build-essential \
+	&& rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+	--default-toolchain stable --profile minimal && \
+	. "$HOME/.cargo/env" && \
+	rustup target add wasm32-unknown-unknown && \
+	cargo install wasm-pack
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Self-host patch (Gotcha: FLUXER_CONFIG unavailable at build time). rspack.config.mjs
+# reads $FLUXER_CONFIG to bake endpoint URLs (api/gateway/media/static_cdn) into the
+# SPA bundle. The domain MUST match the runtime domain — pass it via build arg. The
+# default here is localhost; compose overrides it with your real domain.
+ARG FLUXER_BUILD_CONFIG="{\"domain\":{\"base_domain\":\"localhost\",\"public_scheme\":\"http\",\"public_port\":8080}}"
+RUN echo "$FLUXER_BUILD_CONFIG" > /tmp/fluxer-build-config.json
+ENV FLUXER_CONFIG=/tmp/fluxer-build-config.json
+
 COPY tsconfigs /usr/src/app/tsconfigs
 
 COPY packages/ ./packages/
+RUN pnpm --filter @fluxer/config generate
 COPY fluxer_app/ ./fluxer_app/
 
 RUN cd fluxer_app && pnpm build
@@ -171,4 +198,5 @@ ENV RELEASE_CHANNEL=${RELEASE_CHANNEL}
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
 	CMD curl -f http://localhost:8080/_health || exit 1
 
-ENTRYPOINT ["pnpm", "start"]
+# Self-host patch: the root workspace has no `start` script — target the server package.
+ENTRYPOINT ["pnpm", "--filter", "fluxer_server", "start"]

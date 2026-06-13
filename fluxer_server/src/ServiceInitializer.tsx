@@ -277,6 +277,9 @@ function createAppServerInitializer(context: ServiceInitializationContext): Serv
 
 	const publicUrlHost = new URL(requireValue(config.endpoints.app, 'endpoints.app')).origin;
 	const mediaUrlHost = new URL(requireValue(config.endpoints.media, 'endpoints.media')).origin;
+	// Self-host patch: emoji SVGs, fonts, and icons are loaded from the static CDN
+	// (public fluxerstatic.com by default). Without its origin in the CSP they're blocked.
+	const staticCdnHost = new URL(requireValue(config.endpoints.static_cdn, 'endpoints.static_cdn')).origin;
 
 	const appServer = createAppServer({
 		staticDir,
@@ -289,10 +292,10 @@ function createAppServerInitializer(context: ServiceInitializationContext): Serv
 		cspDirectives: {
 			defaultSrc: ["'self'"],
 			scriptSrc: ["'self'", "'unsafe-inline'"],
-			styleSrc: ["'self'", "'unsafe-inline'"],
-			imgSrc: ["'self'", 'data:', 'blob:', publicUrlHost, mediaUrlHost],
-			connectSrc: ["'self'", 'wss:', 'ws:', publicUrlHost],
-			fontSrc: ["'self'"],
+			styleSrc: ["'self'", "'unsafe-inline'", staticCdnHost],
+			imgSrc: ["'self'", 'data:', 'blob:', publicUrlHost, mediaUrlHost, staticCdnHost],
+			connectSrc: ["'self'", 'wss:', 'ws:', publicUrlHost, staticCdnHost],
+			fontSrc: ["'self'", staticCdnHost],
 			mediaSrc: ["'self'", 'blob:', mediaUrlHost],
 			frameSrc: ["'none'"],
 		},
