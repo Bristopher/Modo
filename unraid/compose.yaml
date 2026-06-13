@@ -101,6 +101,12 @@ services:
     init: true
     environment:
       FLUXER_CONFIG: /usr/src/app/config/config.json
+      # Pin the Erlang node to the loopback IP. The entrypoint otherwise derives
+      # the node host from `hostname -f`, which inside Docker resolves to a name
+      # the VM can't bind, so net_kernel dies with `{'EXIT',nodistribution}`. The
+      # gateway never clusters (server<->gateway is NATS, clients are WS on 8082),
+      # so a fixed loopback node is correct and needs no rebuild.
+      FLUXER_GATEWAY_NODE_NAME: fluxer_gateway@127.0.0.1
     depends_on:
       nats:
         condition: service_healthy
