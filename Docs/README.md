@@ -26,6 +26,7 @@ instance from the public monorepo (`github.com/fluxerapp/fluxer`).
 | [09-docker-compose-extended.md](./09-docker-compose-extended.md) | The extended `compose.yaml` (added NATS + gateway) — what changed, how to bring it up, remaining caveats |
 | [10-turnkey-localhost.md](./10-turnkey-localhost.md) | One-command local instance: Caddy + Mailpit override, localhost config, secret seeder, run steps (**not yet runtime-verified**) |
 | [11-build-patches-and-unraid.md](./11-build-patches-and-unraid.md) | **The ~14 source patches** that make the image build/run (from the PaulMColeman + mgabor3141 guides) + an **Unraid + reverse-proxy + duckdns** deployment walkthrough |
+| [12-setup-and-migration.md](./12-setup-and-migration.md) | **Operations guide** — fresh setup, **changing the domain** (why it needs a rebuild), **moving to a new machine** (what secrets/data to carry), and backups |
 
 ## Quick orientation
 

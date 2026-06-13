@@ -80,24 +80,28 @@ docker compose -f compose.yaml -f compose.localhost.yaml up -d
 
 ## Unraid deployment (real domain + reverse proxy)
 
-Target topology:
+Target topology (NPM and the stack share the custom Docker network **`bignet`**, so NPM reaches
+Caddy by container name + internal port — no published host port):
 
 ```
-browser ──https──> bigweld.duckdns.org ──> [Unraid reverse proxy: NPM/SWAG, TLS]
-                                                │  forwards to host:8080
-                                                ▼
-                                   [caddy :8080]  ← sole stack entrypoint, plain http
-                                     ├─ /gateway* → fluxer_gateway:8082
-                                     ├─ /mailpit/* → mailpit:8025
-                                     └─ everything → fluxer_server:8080  (api, media, SPA, /admin, /s3)
-                                                │ NATS rpc.api
-                                   [nats] [valkey] [mailpit]
+browser ──https──> fluxer.bigweld.duckdns.org ──> [router :443] ──> [Nginx Proxy Manager, TLS]
+                                                                         │  (both on docker net "bignet")
+                                                                         │  proxy to  caddy:8080
+                                                                         ▼
+                                              [caddy :8080]  ← sole stack entrypoint, plain http
+                                                ├─ /gateway* → fluxer_gateway:8082   (on "default" net)
+                                                ├─ /mailpit/* → mailpit:8025
+                                                └─ everything → fluxer_server:8080  (api, media, SPA, /admin, /s3)
+                                                           │ NATS rpc.api
+                                              [nats] [valkey] [mailpit]   ← private "default" net only
 ```
 
-Your reverse proxy terminates TLS for the public `https://bigweld.duckdns.org` and forwards the
-whole hostname to the stack's Caddy on `HOST_HTTP_PORT` (8080). Caddy does the single-origin path
-routing internally — **you do not configure per-path routes in NPM/SWAG**, just one proxy host →
-`http://<unraid-ip>:8080`. Enable **WebSocket support** on that proxy host (for `/gateway`).
+NPM terminates TLS for `https://fluxer.bigweld.duckdns.org` and forwards the whole hostname to the
+stack's Caddy. Because NPM is on `bignet` and `compose.unraid.yaml` attaches `caddy` to `bignet`,
+the NPM proxy target is simply **`caddy` : `8080`** (the internal container port) — **no host IP, no
+published port**. Caddy does the single-origin path routing internally, so **you do not configure
+per-path routes in NPM** — one proxy host, **WebSocket support ON** (for `/gateway`). The API,
+gateway, NATS, Valkey, and Mailpit stay on the private `default` network, reachable only via Caddy.
 
 ### 1. Get the source onto Unraid
 
@@ -133,22 +137,31 @@ node scripts/seed_config.mjs config/config.json --from config/config.duckdns.tem
 
 ### 3. Build (domain baked in) and boot
 
+Add the `compose.unraid.yaml` override — it joins `caddy` to your existing `bignet` network and
+drops the published host port. (`bignet` must already exist: `docker network create bignet`, or
+make it in the Unraid Docker UI.)
+
 ```bash
-docker compose -f compose.yaml -f compose.localhost.yaml build fluxer_gateway fluxer_server
-docker compose -f compose.yaml -f compose.localhost.yaml up -d
-docker compose -f compose.yaml -f compose.localhost.yaml ps
+docker compose -f compose.yaml -f compose.localhost.yaml -f compose.unraid.yaml build fluxer_gateway fluxer_server
+docker compose -f compose.yaml -f compose.localhost.yaml -f compose.unraid.yaml up -d
+docker compose -f compose.yaml -f compose.localhost.yaml -f compose.unraid.yaml ps
 ```
+
+(`HOST_HTTP_PORT` in `.env` is unused with this override since nothing is published — NPM reaches
+Caddy over `bignet`.)
 
 ### 4. Reverse proxy host
 
-In Nginx Proxy Manager (or SWAG): new proxy host
-- Domain: `bigweld.duckdns.org`
-- Forward to: `http://<unraid-ip>:8080`
+In Nginx Proxy Manager (which must also be attached to **`bignet`**): new proxy host
+- Domain: `fluxer.bigweld.duckdns.org`
+- Scheme: `http`, Forward Hostname: **`caddy`**, Forward Port: **`8080`** (container name + internal port)
 - **Websockets support: ON**
-- Request a Let's Encrypt cert (DuckDNS DNS challenge or HTTP challenge once 80/443 are forwarded).
+- Advanced: `client_max_body_size 100M;` (for uploads/attachments)
+- SSL: request a Let's Encrypt cert (DuckDNS DNS challenge easiest), Force SSL on.
 
-Port-forward 80/443 on your router → Unraid (for the cert + public access). The DuckDNS hostname
-must point at your WAN IP (DuckDNS updater container or router DDNS).
+Port-forward **80/443** on your router → the NPM host (for the cert + public HTTPS). **Do not** port
+the internal `8080` — it isn't even published. The DuckDNS hostname (wildcard `*.bigweld.duckdns.org`
+resolves automatically) must point at your WAN IP via a DuckDNS updater or router DDNS.
 
 ### 5. First account = admin
 

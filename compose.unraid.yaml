@@ -1,0 +1,25 @@
+# Unraid override — joins the stack's entrypoint to your existing custom Docker network
+# "bignet" so Nginx Proxy Manager (also on bignet) can reach it by container name + the
+# INTERNAL port, with no published host port.
+#
+#   docker compose -f compose.yaml -f compose.localhost.yaml -f compose.unraid.yaml up -d
+#
+# In NPM, the proxy host forwards to:  caddy : 8080   (scheme http, websockets ON)
+#
+# Only `caddy` is exposed on bignet — the API/gateway/nats/valkey/mailpit stay on the
+# private compose network, reachable only through Caddy. Caddy keeps its membership on
+# the default compose network too, so it can still route to those internal services.
+
+networks:
+  # Your pre-existing user-defined network. Must already exist on the host:
+  #   docker network create bignet      (or created via the Unraid UI)
+  bignet:
+    external: true
+
+services:
+  caddy:
+    networks:
+      - default # talk to fluxer_server / fluxer_gateway / mailpit (internal routing)
+      - bignet # NPM reaches this container here, as  caddy:8080
+    # NPM connects over bignet, so no host port is needed. Drop the published port.
+    ports: !reset []
