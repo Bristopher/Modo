@@ -6,15 +6,21 @@
 # Folder layout on the NAS (copy just these — a handful of files, not the repo):
 #   unraid/
 #     compose.yaml        <- this file
-#     .env                <- image tags + SMTP password (copy from repo root, see below)
+#     .env                <- image tags + SMTP password + FLUXER_APPDATA (see below)
 #     config/
 #       config.json       <- seeded on your dev box (secrets, voice keys, your domain)
 #       livekit.yaml      <- rendered by the seeder (voice)
 #       Caddyfile         <- routing (copy from repo config/)
 #
+# IMPORTANT (Compose Manager): config is bind-mounted via ${FLUXER_APPDATA}. The plugin
+# runs the stack from its OWN project dir, so a relative ./config would miss. Set the
+# absolute path to THIS unraid/ folder in .env, e.g.:
+#   FLUXER_APPDATA=/mnt/user/nvme_array/appdata/Fluxer/unraid
+# (Running plain `docker compose` from inside this folder? The `.` default below also works.)
+#
 # Deploy:
-#   docker load -i fluxer-images.tar         # the images from your dev box
 #   docker network create bignet             # if it doesn't already exist
+#   docker compose pull                      # or `docker load -i fluxer-images.tar` for the tar path
 #   docker compose --profile voice up -d     # (drop --profile voice if not using voice)
 #
 # Reverse proxy (NPM, on bignet): forward host `caddy` port `8080`, Websockets ON.
@@ -75,7 +81,7 @@ services:
       nats:
         condition: service_healthy
     volumes:
-      - ./config:/usr/src/app/config:ro
+      - ${FLUXER_APPDATA:-.}/config:/usr/src/app/config:ro
       - fluxer_data:/usr/src/app/data
     healthcheck:
       test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1:8080/_health || exit 1']
@@ -98,7 +104,7 @@ services:
       fluxer_server:
         condition: service_healthy
     volumes:
-      - ./config:/usr/src/app/config:ro
+      - ${FLUXER_APPDATA:-.}/config:/usr/src/app/config:ro
     healthcheck:
       test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1:8082/_health || exit 1']
       interval: 15s
@@ -120,7 +126,7 @@ services:
       - default # reach fluxer_server / fluxer_gateway / mailpit / livekit
       - bignet # NPM reaches this container here, as caddy:8080
     volumes:
-      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${FLUXER_APPDATA:-.}/config/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     healthcheck:
@@ -154,7 +160,7 @@ services:
     restart: unless-stopped
     command: ['--config', '/etc/livekit/livekit.yaml']
     volumes:
-      - ./config/livekit.yaml:/etc/livekit/livekit.yaml:ro
+      - ${FLUXER_APPDATA:-.}/config/livekit.yaml:/etc/livekit/livekit.yaml:ro
     # Signaling (7880) is fronted by Caddy at /livekit. Media uses a single muxed UDP
     # port + TCP fallback + TURN — forward 7882/udp, 7881/tcp, 3478/udp on your router.
     ports:

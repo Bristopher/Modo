@@ -69,6 +69,9 @@ $regPort = if ($Registry -match ':(\d+)$') { $Matches[1] } else { '5000' }
 FLUXER_SERVER_IMAGE=localhost:$regPort/fluxer-server:$Tag
 FLUXER_GATEWAY_IMAGE=localhost:$regPort/fluxer-gateway:$Tag
 FLUXER_SMTP_PASSWORD=$smtp
+# Absolute path to the unraid/ folder ON THE NAS — Compose Manager needs this to find config/.
+# Edit if you put the stack somewhere else.
+FLUXER_APPDATA=/mnt/user/nvme_array/appdata/Fluxer/unraid
 "@ | Set-Content unraid/.env
 
 Write-Host ''
