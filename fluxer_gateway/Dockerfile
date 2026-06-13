@@ -38,7 +38,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=build /usr/src/app/_build/prod/rel/fluxer_gateway .
 COPY scripts/docker_entrypoint.sh /opt/fluxer_gateway/bin/docker_entrypoint.sh
 
-RUN chmod +x /opt/fluxer_gateway/bin/docker_entrypoint.sh && \
+# Strip any CR that a Windows checkout may have baked into the script. A CRLF
+# shebang makes the kernel exec `sh\r` and the container dies with
+# `env: 'sh\r': No such file or directory`.
+RUN sed -i 's/\r$//' /opt/fluxer_gateway/bin/docker_entrypoint.sh && \
+	chmod +x /opt/fluxer_gateway/bin/docker_entrypoint.sh && \
 	useradd -r -s /sbin/nologin -d /opt/fluxer_gateway fluxer && \
 	chown -R fluxer:fluxer /opt/fluxer_gateway
 
