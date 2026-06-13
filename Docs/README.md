@@ -19,6 +19,7 @@ instance from the public monorepo (`github.com/fluxerapp/fluxer`).
 | [06-client-gateway-connection.md](./06-client-gateway-connection.md) | How the React client discovers + connects to the Erlang gateway, handshake, heartbeat |
 | [07-self-hosting-roadmap.md](./07-self-hosting-roadmap.md) | Concrete TODO list to make a complete, reproducible self-host |
 | [08-bootstrap-and-deployment.md](./08-bootstrap-and-deployment.md) | What `devenv up` bootstraps (auto-seeded secrets/keys) + how upstream CI ships images (gateway is build-only) |
+| [09-docker-compose-extended.md](./09-docker-compose-extended.md) | The extended `compose.yaml` (added NATS + gateway) — what changed, how to bring it up, remaining caveats |
 
 ## Quick orientation
 

@@ -47,9 +47,16 @@ And the Self-hosting section body is just `TBD`, pointing to `docs.fluxer.app/se
 | **fluxer_gateway** (Erlang, `services.gateway.port: 8082`) | ❌ No | **No realtime** — messages, typing, presence won't deliver over WebSocket |
 | **S3-compatible store** (`s3.endpoint`) | Partial (points at `:8080/s3` on the server itself) | Media uploads depend on the server's embedded S3 shim being enabled |
 
-So: `docker compose up` today gives you the HTTP API + web app, but **no working realtime
-gateway and no NATS**, which means it is not a usable chat instance. This is the core reason
-self-hosting is still "TBD".
+So: **upstream's** `docker compose up` gives you the HTTP API + web app, but **no working
+realtime gateway and no NATS**, which means it is not a usable chat instance. This is the core
+reason self-hosting is still "TBD".
+
+> **Update (this fork):** `compose.yaml` has been extended to add the missing **NATS** and
+> **fluxer_gateway** services (gateway built locally from `./fluxer_gateway`). Default
+> `docker compose up` now runs valkey + nats + fluxer_server + fluxer_gateway. See
+> [09-docker-compose-extended.md](./09-docker-compose-extended.md). Remaining gaps are config/
+> topology (reverse-proxy + TLS for non-localhost discovery, production secret seeding), not
+> missing services.
 
 ## Secrets you must generate either way
 

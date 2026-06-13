@@ -19,6 +19,27 @@ services:
       retries: 5
     logging: *default-logging
 
+  nats:
+    image: nats:2.10-alpine
+    container_name: nats
+    restart: unless-stopped
+    # JetStream enabled; monitoring endpoint on 8222 for healthcheck.
+    # NATS is internal-only (no host ports). To enable token auth, append
+    # '--auth=${NATS_AUTH_TOKEN}' below and set services.nats.auth_token to the
+    # same value in config/config.json.
+    command:
+      - '--jetstream'
+      - '--store_dir=/data'
+      - '--http_port=8222'
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8222/healthz || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
   fluxer_server:
     image: ${FLUXER_SERVER_IMAGE:-ghcr.io/fluxerapp/fluxer-server:stable}
     container_name: fluxer_server
@@ -32,6 +53,8 @@ services:
     depends_on:
       valkey:
         condition: service_healthy
+      nats:
+        condition: service_healthy
     volumes:
       - ./config:/usr/src/app/config:ro
       - fluxer_data:/usr/src/app/data
@@ -41,6 +64,37 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+    logging: *default-logging
+
+  # Erlang/OTP realtime WebSocket gateway. No public image is published
+  # (upstream deploys it over SSH to private infra), so it is built locally
+  # from ./fluxer_gateway. It reads the same config.json as the umbrella and
+  # talks to the API over NATS (subject rpc.api) for token validation + events.
+  fluxer_gateway:
+    build:
+      context: ./fluxer_gateway
+    image: fluxer-gateway:local
+    container_name: fluxer_gateway
+    restart: unless-stopped
+    init: true
+    environment:
+      FLUXER_CONFIG: /usr/src/app/config/config.json
+    ports:
+      # WS port is services.gateway.port in config.json (8082 in the prod template)
+      - '${FLUXER_GATEWAY_PORT:-8082}:8082'
+    depends_on:
+      nats:
+        condition: service_healthy
+      fluxer_server:
+        condition: service_healthy
+    volumes:
+      - ./config:/usr/src/app/config:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1:8082/_health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     logging: *default-logging
 
   meilisearch:
@@ -108,5 +162,6 @@ services:
 volumes:
   valkey_data:
   fluxer_data:
+  nats_data:
   meilisearch_data:
   elasticsearch_data:

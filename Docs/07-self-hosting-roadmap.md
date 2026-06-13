@@ -16,19 +16,19 @@ maintainer is doing a refactor that will likely ship an official self-host path
 
 ## P1 — Make the Docker `compose.yaml` actually complete
 
-The current `compose.yaml` cannot run a working instance. To fix:
+Status: **largely done** — see [09-docker-compose-extended.md](./09-docker-compose-extended.md).
 
-- [ ] **Add NATS** service (core + JetStream) matching `services.nats.*` in the config.
-- [ ] **Add the Erlang gateway** service. Needs a published image
-      (`fluxer_gateway/Dockerfile` exists — check whether `ghcr.io/fluxerapp/fluxer-gateway`
-      is published; if not, build locally). Wire `services.gateway.port: 8082` and
-      `media_proxy_endpoint`.
+- [x] **Add NATS** (JetStream) matching `services.nats.*`. Done (internal-only, `nats_data` vol).
+- [x] **Add the Erlang gateway** service. Done — built locally from `./fluxer_gateway`
+      (confirmed no public image exists), exposes 8082, healthchecks `/_health`. RPC + events
+      run over NATS, not HTTP.
+- [x] **Provide a `.env.example`.** Done (`FLUXER_GATEWAY_PORT`, `NATS_AUTH_TOKEN`, etc.).
 - [ ] Decide media storage: the prod template points `s3.endpoint` at the server's own
       `:8080/s3` shim — confirm that embedded S3 is enabled in the image, or add MinIO.
 - [ ] Add a front proxy (Caddy/Traefik) terminating TLS and routing `/`, `/api`, `/media`,
       and the gateway WebSocket to the right services, so `domain.base_domain` works over HTTPS.
-- [ ] Provide a `.env.example` and a `config.json` generator that fills all the secrets from
-      [04-config-reference.md](./04-config-reference.md).
+- [ ] Add a `config.json` generator/bootstrap that fills secrets + VAPID for production (dev's
+      auto-seed has no compose equivalent).
 
 ## P2 — Reproducible config + secret bootstrap
 
