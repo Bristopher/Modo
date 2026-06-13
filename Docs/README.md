@@ -18,6 +18,7 @@ instance from the public monorepo (`github.com/fluxerapp/fluxer`).
 | [05-auth-flow.md](./05-auth-flow.md) | Login, token format, password hashing, session issuance/validation (with file refs) |
 | [06-client-gateway-connection.md](./06-client-gateway-connection.md) | How the React client discovers + connects to the Erlang gateway, handshake, heartbeat |
 | [07-self-hosting-roadmap.md](./07-self-hosting-roadmap.md) | Concrete TODO list to make a complete, reproducible self-host |
+| [08-bootstrap-and-deployment.md](./08-bootstrap-and-deployment.md) | What `devenv up` bootstraps (auto-seeded secrets/keys) + how upstream CI ships images (gateway is build-only) |
 
 ## Quick orientation
 

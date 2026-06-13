@@ -55,6 +55,16 @@ static_cdn, marketing, admin, invite, gift, webapp, ...}` sourced from `Config.e
 Clients fetch this to learn where the gateway WebSocket lives — see
 [06-client-gateway-connection.md](./06-client-gateway-connection.md).
 
+## Dev secrets are auto-generated; production secrets are not
+
+For **dev**, you do **not** fill these in by hand. `scripts/dev_bootstrap.sh` (run automatically
+by `devenv up`) copies the dev template to `config.json` and seeds every secret + the VAPID and
+Bluesky OAuth keys + LiveKit config. See [08-bootstrap-and-deployment.md](./08-bootstrap-and-deployment.md).
+
+For **production** there is no equivalent auto-seed in `compose.yaml` — fill the checklist below
+yourself. (Bootstrap also touches `services.queue.secret` and removes a deprecated top-level
+`.gateway` key; verify the current shape against `packages/config/src/ConfigSchema.json`.)
+
 ## Secrets checklist (production)
 
 Generate independently; never reuse:

@@ -49,18 +49,29 @@ The current `compose.yaml` cannot run a working instance. To fix:
 - [ ] Decide SQLite vs Cassandra threshold (Cassandra migrations: `fluxer_api/scripts/CassandraMigrate.tsx`).
 - [ ] Admin panel pass: set tiers/limits (self-host is fully unlocked, no paywall).
 
-## Open questions to resolve from the code
+## Open questions — status
 
-- [ ] Is `fluxer-gateway` published to GHCR, or must self-hosters compile Erlang? (check
-      `.github/workflows` + `fluxer_gateway/Dockerfile`)
+Resolved (see [08-bootstrap-and-deployment.md](./08-bootstrap-and-deployment.md)):
+
+- [x] **Is `fluxer-gateway` published to GHCR?** **No.** Only `fluxer-server` is on public GHCR
+      (`release-server.yaml`). The gateway deploys over SSH to private infra
+      (`deploy-gateway.yaml`). Self-hosters **must build it** from `fluxer_gateway/Dockerfile`.
+- [x] **What does `dev_bootstrap.sh` do?** Creates `config.json` from the dev template,
+      auto-seeds all secrets, generates VAPID + Bluesky OAuth keys, renders LiveKit config,
+      symlinks the NSFW ONNX model. A production deploy has **no equivalent** — must be scripted.
+- [x] **Are dev secrets manual?** No — bootstrap seeds them. **Production secrets are manual.**
+
+Still open:
+
 - [ ] Does the umbrella image embed the S3 shim, or is external object storage mandatory in prod?
-- [ ] What exactly does `scripts/dev_bootstrap.sh` do that a production deploy must replicate
-      (DB init, search index creation, key generation, asset build)?
+      (prod template points `s3.endpoint` at the server's own `:8080/s3`)
 - [ ] How are client assets (Rust→wasm, CSS) built/served in prod vs the dev `css_watch` +
-      Vite dev server?
+      Vite dev server? (`deploy-app.yaml` builds the app image — inspect for the prod asset path)
+- [ ] Confirm the current prod config shape vs `packages/config/src/ConfigSchema.json` — the
+      bootstrap references `services.queue.secret` and a deprecated top-level `.gateway` not in
+      the prod template.
 - [ ] Federation/relay (`fluxer_relay*`, `federation.enabled`) — out of scope for a basic
-      self-host, but note the connection-initiation secret + `/.well-known/fluxer` are already
-      wired.
+      self-host, but the connection-initiation secret + `/.well-known/fluxer` are already wired.
 
 ## Useful source pointers
 
