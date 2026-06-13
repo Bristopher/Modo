@@ -23,6 +23,9 @@
 [CmdletBinding()]
 param(
     [switch]$Canary,
+    [string]$Brand,        # e.g. "Fluxer Bigweld" -> installs as its OWN app,
+                           # separate from official Fluxer (own appId + profile).
+    [int]$BuildNumber = 0, # force a personal build number (0 = auto-increment).
     [switch]$SkipInstall,
     [ValidateSet('x64', 'arm64')]
     [string]$Arch = 'x64'
@@ -68,17 +71,80 @@ function Initialize-WinCodeSignCache($desktopDir) {
     }
 }
 
+# Repo version core "YYYY.M.D" from the last commit date (no leading zeros so
+# it's valid semver). Falls back to 0.0.0 if git isn't available.
+function Get-RepoVersionCore($repoRoot) {
+    try {
+        $d = (& git -C $repoRoot log -1 --date=format:'%Y%m%d' --format=%cd 2>$null)
+        if ($LASTEXITCODE -ne 0 -or -not $d) { return $null }
+        $d = $d.Trim()
+        if ($d -notmatch '^\d{8}$') { return $null }
+        return ("{0}.{1}.{2}" -f [int]$d.Substring(0,4), [int]$d.Substring(4,2), [int]$d.Substring(6,2))
+    } catch { return $null }
+}
+function Get-RepoSha($repoRoot) {
+    try { $s = (& git -C $repoRoot rev-parse --short=8 HEAD 2>$null); if ($LASTEXITCODE -eq 0 -and $s) { return $s.Trim() } } catch {}
+    return $null
+}
+function Test-RepoDirty($repoRoot) {
+    try { return [bool](& git -C $repoRoot status --porcelain 2>$null) } catch { return $false }
+}
+# Personal, monotonically increasing build counter, stored OUTSIDE the repo so
+# it never dirties git. -BuildNumber overrides; otherwise it auto-increments.
+function Get-NextBuildNumber($explicit) {
+    $dir  = Join-Path $env:LOCALAPPDATA 'FluxerDesktopBuild'
+    $file = Join-Path $dir 'build-number.txt'
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    if ($explicit -gt 0) {
+        $n = $explicit
+    } else {
+        $cur = 0
+        if (Test-Path $file) { [void][int]::TryParse((Get-Content $file -Raw).Trim(), [ref]$cur) }
+        $n = $cur + 1
+    }
+    Set-Content -Path $file -Value $n -Encoding ASCII
+    return $n
+}
+
 # --- Locate paths --------------------------------------------------------
 $RepoRoot   = Split-Path -Parent $PSScriptRoot          # scripts\ -> repo root
 $DesktopDir = Join-Path $RepoRoot 'fluxer_desktop'
 if (-not (Test-Path $DesktopDir)) { Fail "Can't find fluxer_desktop at $DesktopDir" }
 
+# A branded build piggybacks on the canary "slot" purely for isolation: the
+# canary channel gives it a separate userData folder (%APPDATA%\fluxercanary)
+# and a distinct appId base WITHOUT any source change. We then rename it via the
+# generated config so it shows up as e.g. "Fluxer Bigweld", installed completely
+# separately from the official "Fluxer".
+if ($Brand) { $Canary = $true }
+
 $channel = if ($Canary) { 'canary' } else { 'stable' }
-$product = if ($Canary) { 'Fluxer Canary' } else { 'Fluxer' }
+$product = if ($Brand) { $Brand } elseif ($Canary) { 'Fluxer Canary' } else { 'Fluxer' }
+
+$appIdOverride = $null
+if ($Brand) {
+    $slug = ($Brand -replace '[^A-Za-z0-9]', '').ToLower()
+    if (-not $slug) { Fail "Brand '$Brand' has no usable letters/digits for an appId." }
+    $appIdOverride = "app.fluxer.$slug"
+}
+
+# --- Compose the version: repo date + sha + personal build counter -------
+$verCore = Get-RepoVersionCore $RepoRoot
+if (-not $verCore) { $verCore = '0.0.0' }
+$repoSha = Get-RepoSha $RepoRoot
+$buildNo = Get-NextBuildNumber $BuildNumber
+$pre = "b$buildNo"
+if ($repoSha) { $pre += ".g$repoSha" }
+if (Test-RepoDirty $RepoRoot) { $pre += ".dirty" }
+$version = "$verCore-$pre"   # e.g. 2026.6.13-b3.ga5dc6929
 
 Write-Host "Fluxer desktop build" -ForegroundColor Green
 Write-Host "  repo:    $RepoRoot"
-Write-Host "  channel: $channel"
+Write-Host "  product: $product"
+Write-Host "  version: $version" -ForegroundColor Green
+Write-Host "           (repo $verCore @ $repoSha  |  your build #$buildNo)"
+Write-Host "  channel: $channel (storage slot)"
+if ($appIdOverride) { Write-Host "  appId:   $appIdOverride" }
 Write-Host "  arch:    $Arch"
 
 # --- Check tooling -------------------------------------------------------
@@ -124,9 +190,22 @@ try {
     # build. We build Windows only, so emit a temp config that drops `linux`.
     # This leaves the tracked file untouched (clean pulls from upstream).
     $genConfig = Join-Path $DesktopDir '.eb-win.generated.cjs'
+    $brandLines = ''
+    if ($Brand) {
+        $brandJson = $Brand | ConvertTo-Json   # safely quotes/escapes the name
+        $brandLines = @"
+base.productName = $brandJson;          // distinct install dir / exe / Start Menu name
+base.appId = '$appIdOverride';          // distinct Windows app identity
+"@
+    }
+    $verJson = $version | ConvertTo-Json
     $genBody = @"
 const base = require('./electron-builder.config.cjs');
 delete base.linux; // Windows-only build; upstream linux block fails eb26 schema
+$brandLines
+// Stamp our version (package.json is 0.0.0). Shows in the app's About and the
+// installer filename: <repo date>-b<your build #>.g<repo sha>.
+base.extraMetadata = Object.assign({}, base.extraMetadata, { version: $verJson });
 module.exports = base;
 "@
     Set-Content -Path $genConfig -Value $genBody -Encoding UTF8

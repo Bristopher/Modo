@@ -18,7 +18,10 @@
 [CmdletBinding()]
 param(
     [string]$Url,        # optional: set this URL directly, skip the menu
-    [switch]$Canary      # use the Fluxer Canary build instead of stable
+    [switch]$Canary,     # target the Fluxer Canary build instead of stable
+    [string]$Brand       # target a branded build (e.g. "Fluxer Bigweld") made
+                         # with Build-FluxerDesktop.ps1 -Brand. It lives in the
+                         # canary storage slot but has its own name/exe.
 )
 
 # Works on Windows PowerShell 5.1 (built into Windows) and PowerShell 7+.
@@ -33,8 +36,13 @@ $Servers = [ordered]@{
 }
 # =========================================================================
 
-# --- Channel-specific names (don't usually need to change these) ---------
-if ($Canary) {
+# --- Channel/brand-specific names (don't usually need to change these) ----
+if ($Brand) {
+    # Branded builds use the canary storage slot but their own product name.
+    $ProcName    = $Brand
+    $StorageDir  = 'fluxercanary'
+    $ExeLeaf     = "$Brand.exe"
+} elseif ($Canary) {
     $ProcName    = 'Fluxer Canary'
     $StorageDir  = 'fluxercanary'
     $ExeLeaf     = 'Fluxer Canary.exe'
