@@ -1,0 +1,27 @@
+# Your own private image registry ("self-hosted Docker Hub") for the LAN.
+# Run this ONCE on the NAS, on its own — it must exist before the Fluxer stack can pull:
+#   docker compose -f registry-compose.yaml up -d
+#
+# Or, even easier: install "Docker Registry" from Unraid Community Apps (same registry:2
+# image, GUI config — set the port to 5000 and an appdata path for /var/lib/registry).
+#
+# After it's up:
+#   - From your Windows dev box, push to  <unraid-ip>:5000/...   (needs the insecure-
+#     registries entry — see unraid/README.md).
+#   - The Fluxer stack on Unraid pulls from  localhost:5000/...  (no extra config; Docker
+#     treats localhost registries as insecure-OK automatically).
+
+services:
+  registry:
+    image: registry:2
+    container_name: registry
+    restart: unless-stopped
+    ports:
+      - '5000:5000'
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: 'true'
+    volumes:
+      - registry_data:/var/lib/registry
+
+volumes:
+  registry_data:

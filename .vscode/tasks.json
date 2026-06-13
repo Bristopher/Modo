@@ -1,0 +1,47 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Fluxer: Dev (build + run local)",
+			"detail": "Seed localhost config, build, and run on http://localhost:8080, then follow logs.",
+			"type": "shell",
+			"command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ${workspaceFolder}/scripts/dev_up.ps1",
+			"group": { "kind": "build", "isDefault": true },
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+		},
+		{
+			"label": "Fluxer: Stop",
+			"detail": "Stop the localhost stack (keeps data).",
+			"type": "shell",
+			"command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ${workspaceFolder}/scripts/dev_down.ps1",
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "shared" }
+		},
+		{
+			"label": "Fluxer: Stop + wipe data",
+			"detail": "Stop the localhost stack AND delete volumes (DB + uploads).",
+			"type": "shell",
+			"command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ${workspaceFolder}/scripts/dev_down.ps1 -Wipe",
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "shared" }
+		},
+		{
+			"label": "Fluxer: Logs",
+			"detail": "Follow logs for the localhost stack.",
+			"type": "shell",
+			"command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ${workspaceFolder}/scripts/dev_logs.ps1",
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "dedicated" }
+		},
+		{
+			"label": "Fluxer: Build + Save for Unraid",
+			"detail": "Build images with the production domain baked in, save to unraid/fluxer-images.tar, stage unraid/.",
+			"type": "shell",
+			"command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ${workspaceFolder}/scripts/build_for_unraid.ps1",
+			"group": "build",
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+		}
+	]
+}
