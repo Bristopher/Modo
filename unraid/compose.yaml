@@ -156,7 +156,8 @@ services:
   livekit:
     image: livekit/livekit-server:v1.9.11
     container_name: livekit
-    profiles: ['voice']
+    # Always-on (no `profiles:` gate) — this deploy always wants voice, so a plain
+    # `docker compose up -d` / Compose Manager "Up" includes LiveKit with no profile flag.
     restart: unless-stopped
     command: ['--config', '/etc/livekit/livekit.yaml']
     volumes:
