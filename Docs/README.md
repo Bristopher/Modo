@@ -20,6 +20,7 @@ instance from the public monorepo (`github.com/fluxerapp/fluxer`).
 | [07-self-hosting-roadmap.md](./07-self-hosting-roadmap.md) | Concrete TODO list to make a complete, reproducible self-host |
 | [08-bootstrap-and-deployment.md](./08-bootstrap-and-deployment.md) | What `devenv up` bootstraps (auto-seeded secrets/keys) + how upstream CI ships images (gateway is build-only) |
 | [09-docker-compose-extended.md](./09-docker-compose-extended.md) | The extended `compose.yaml` (added NATS + gateway) — what changed, how to bring it up, remaining caveats |
+| [10-turnkey-localhost.md](./10-turnkey-localhost.md) | One-command local instance: Caddy + Mailpit override, localhost config, secret seeder, run steps (**not yet runtime-verified**) |
 
 ## Quick orientation
 

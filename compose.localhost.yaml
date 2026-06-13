@@ -1,0 +1,70 @@
+# Localhost turnkey override for compose.yaml.
+#
+#   docker compose -f compose.yaml -f compose.localhost.yaml up -d
+#
+# Adds a Caddy front door (sole host entrypoint on :8080) and Mailpit (captures
+# verification emails so you can register an account), and removes the direct
+# host port mappings from the server/gateway so everything goes through Caddy.
+#
+# Use with config/config.localhost.template.json (base_domain=localhost, :8080).
+
+services:
+  # Caddy is the only service bound to the host. All client-derived endpoints
+  # (/api, /gateway, /media, ...) resolve to this single origin.
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    depends_on:
+      fluxer_server:
+        condition: service_healthy
+      fluxer_gateway:
+        condition: service_healthy
+    ports:
+      - '${PUBLIC_PORT:-8080}:8080'
+    volumes:
+      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8080/_caddy_health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+  # Captures all outbound dev email. Inbox proxied at http://localhost:8080/mailpit/
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: mailpit
+    restart: unless-stopped
+    environment:
+      MP_WEBROOT: /mailpit/
+    volumes:
+      - mailpit_data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8025/mailpit/ || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+  # Caddy fronts these — drop their direct host port bindings to avoid a clash
+  # with Caddy on :8080 (requires Docker Compose v2.24+ for the !reset tag).
+  fluxer_server:
+    ports: !reset []
+  fluxer_gateway:
+    ports: !reset []
+
+volumes:
+  caddy_data:
+  caddy_config:
+  mailpit_data:

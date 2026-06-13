@@ -1,0 +1,70 @@
+{
+	"$schema": "../packages/config/src/ConfigSchema.json",
+	"env": "production",
+	"domain": {
+		"base_domain": "localhost",
+		"public_scheme": "http",
+		"public_port": 8080
+	},
+	"database": {
+		"backend": "sqlite",
+		"sqlite_path": "./data/fluxer.db"
+	},
+	"internal": {
+		"kv": "redis://valkey:6379/0",
+		"kv_mode": "standalone"
+	},
+	"s3": {
+		"access_key_id": "GENERATE",
+		"secret_access_key": "GENERATE",
+		"endpoint": "http://127.0.0.1:8080/s3"
+	},
+	"services": {
+		"server": {
+			"port": 8080,
+			"host": "0.0.0.0"
+		},
+		"media_proxy": {
+			"secret_key": "GENERATE"
+		},
+		"admin": {
+			"secret_key_base": "GENERATE",
+			"oauth_client_secret": "GENERATE"
+		},
+		"marketing": {
+			"enabled": false
+		},
+		"gateway": {
+			"port": 8082,
+			"admin_reload_secret": "GENERATE",
+			"media_proxy_endpoint": "http://fluxer_server:8080/media"
+		},
+		"nats": {
+			"core_url": "nats://nats:4222",
+			"jetstream_url": "nats://nats:4222",
+			"auth_token": ""
+		}
+	},
+	"auth": {
+		"sudo_mode_secret": "GENERATE",
+		"connection_initiation_secret": "GENERATE",
+		"vapid": {
+			"public_key": "GENERATE",
+			"private_key": "GENERATE"
+		}
+	},
+	"integrations": {
+		"email": {
+			"enabled": true,
+			"provider": "smtp",
+			"from_email": "noreply@localhost",
+			"smtp": {
+				"host": "mailpit",
+				"port": 1025,
+				"username": "",
+				"password": "",
+				"secure": false
+			}
+		}
+	}
+}

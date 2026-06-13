@@ -1,0 +1,44 @@
+# Fluxer front door for the Docker Compose localhost stack.
+# Single origin, path-based routing — mirrors dev/Caddyfile.dev but proxies to
+# the compose service names instead of localhost dev ports.
+#
+# Endpoints are derived by the app from domain.{base_domain,public_scheme,public_port}
+# (see packages/config/src/EndpointDerivation.tsx): /api, /media, /gateway, etc. all
+# live on this one origin. Keep Caddy's listen port == domain.public_port in config.json.
+
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	handle /_caddy_health {
+		respond "OK" 200
+	}
+
+	# Realtime WebSocket gateway. The gateway's cowboy router serves the socket at
+	# "/" and health at "/_health", so strip the /gateway prefix before proxying.
+	@gateway path /gateway /gateway/*
+	handle @gateway {
+		uri strip_prefix /gateway
+		reverse_proxy fluxer_gateway:8082
+	}
+
+	# Dev email inbox (Mailpit). Only present when the localhost override is used.
+	redir /mailpit /mailpit/
+	handle_path /mailpit/* {
+		rewrite * /mailpit{path}
+		reverse_proxy mailpit:8025
+	}
+
+	# Everything else — /api, /admin, /s3, /media, /.well-known/fluxer, health probes,
+	# and the SPA itself — is served by the umbrella (combined mode includes app_proxy).
+	handle {
+		reverse_proxy fluxer_server:8080
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

@@ -25,10 +25,13 @@ Status: **largely done** — see [09-docker-compose-extended.md](./09-docker-com
 - [x] **Provide a `.env.example`.** Done (`FLUXER_GATEWAY_PORT`, `NATS_AUTH_TOKEN`, etc.).
 - [ ] Decide media storage: the prod template points `s3.endpoint` at the server's own
       `:8080/s3` shim — confirm that embedded S3 is enabled in the image, or add MinIO.
-- [ ] Add a front proxy (Caddy/Traefik) terminating TLS and routing `/`, `/api`, `/media`,
-      and the gateway WebSocket to the right services, so `domain.base_domain` works over HTTPS.
-- [ ] Add a `config.json` generator/bootstrap that fills secrets + VAPID for production (dev's
-      auto-seed has no compose equivalent).
+- [x] Add a front proxy. Done for **localhost** — `config/Caddyfile` + `compose.localhost.yaml`
+      (single origin, path routing, Mailpit). See [10-turnkey-localhost.md](./10-turnkey-localhost.md).
+      TLS + real-domain Caddy config still TODO (P3).
+- [x] Add a `config.json` generator that fills secrets + VAPID. Done — `scripts/seed_config.mjs`
+      (Node, no jq) + `config/config.localhost.template.json`.
+- [ ] **Runtime-verify the turnkey stack** (P0 once Docker is up): boot it, register an account
+      via Mailpit, send a message across two sessions. Fold results back into docs 07/10.
 
 ## P2 — Reproducible config + secret bootstrap
 
