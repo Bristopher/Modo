@@ -26,6 +26,9 @@ param(
     [string]$Brand,        # e.g. "Fluxer Bigweld" -> installs as its OWN app,
                            # separate from official Fluxer (own appId + profile).
     [int]$BuildNumber = 0, # force a personal build number (0 = auto-increment).
+    [string]$DefaultServer, # e.g. "https://fluxer.bigweld.duckdns.org" -> the
+                            # installer seeds settings.json so the app connects
+                            # to this server out of the box (no Switch script).
     [switch]$SkipInstall,
     [ValidateSet('x64', 'arm64')]
     [string]$Arch = 'x64'
@@ -121,6 +124,18 @@ if ($Brand) { $Canary = $true }
 $channel = if ($Canary) { 'canary' } else { 'stable' }
 $product = if ($Brand) { $Brand } elseif ($Canary) { 'Fluxer Canary' } else { 'Fluxer' }
 
+# Where the app keeps its settings.json (the canary slot is used by both -Canary
+# and -Brand builds for profile isolation). The installer seeds this folder when
+# -DefaultServer is given.
+$storageDir = if ($Canary) { 'fluxercanary' } else { 'fluxer' }
+
+if ($DefaultServer) {
+    $DefaultServer = $DefaultServer.Trim().TrimEnd('/')
+    if ($DefaultServer -notmatch '^https?://[^/\s]+') {
+        Fail "DefaultServer '$DefaultServer' is not a valid URL (expected https://host...)."
+    }
+}
+
 $appIdOverride = $null
 if ($Brand) {
     $slug = ($Brand -replace '[^A-Za-z0-9]', '').ToLower()
@@ -198,11 +213,40 @@ base.productName = $brandJson;          // distinct install dir / exe / Start Me
 base.appId = '$appIdOverride';          // distinct Windows app identity
 "@
     }
+    # Optionally seed the server URL at install time via a custom NSIS include.
+    # This writes %APPDATA%\<storageDir>\settings.json on first install ONLY (it
+    # won't clobber a user who later switched servers), so the app connects to
+    # your instance out of the box -- no need to run Switch-FluxerInstance.ps1.
+    # The .nsh is generated/cleaned alongside the temp config, so the tracked
+    # source stays untouched and upstream pulls stay clean.
+    $nshLines = ''
+    $genNsh   = Join-Path $DesktopDir '.eb-installer.generated.nsh'
+    if ($DefaultServer) {
+        $settingsBody = "{`"app_url`": `"$DefaultServer`"}"
+        # NSIS: only seed if the file isn't already there (preserve user choice).
+        $nshBody = @"
+!macro customInstall
+  IfFileExists "`$APPDATA\$storageDir\settings.json" fluxer_seed_done fluxer_seed_write
+  fluxer_seed_write:
+    CreateDirectory "`$APPDATA\$storageDir"
+    FileOpen `$0 "`$APPDATA\$storageDir\settings.json" w
+    FileWrite `$0 '$settingsBody'
+    FileClose `$0
+  fluxer_seed_done:
+!macroend
+"@
+        Set-Content -Path $genNsh -Value $nshBody -Encoding ASCII
+        $nshJson  = '.eb-installer.generated.nsh' | ConvertTo-Json  # path relative to config
+        $nshLines = "base.nsis = Object.assign({}, base.nsis, { include: $nshJson });"
+        Write-Host "  default server: $DefaultServer (seeded into installer)" -ForegroundColor Green
+    }
+
     $verJson = $version | ConvertTo-Json
     $genBody = @"
 const base = require('./electron-builder.config.cjs');
 delete base.linux; // Windows-only build; upstream linux block fails eb26 schema
 $brandLines
+$nshLines
 // Stamp our version (package.json is 0.0.0). Shows in the app's About and the
 // installer filename: <repo date>-b<your build #>.g<repo sha>.
 base.extraMetadata = Object.assign({}, base.extraMetadata, { version: $verJson });
@@ -225,8 +269,10 @@ module.exports = base;
     }
 }
 finally {
-    $tmp = Join-Path $DesktopDir '.eb-win.generated.cjs'
-    if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    foreach ($tmp in @('.eb-win.generated.cjs', '.eb-installer.generated.nsh')) {
+        $p = Join-Path $DesktopDir $tmp
+        if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue }
+    }
     Pop-Location
 }
 
@@ -241,8 +287,15 @@ if ($installer) {
     Write-Host "`nInstaller ready:" -ForegroundColor Green
     Write-Host "  $($installer.FullName)"
     Write-Host ("  size: {0:N1} MB" -f ($installer.Length / 1MB))
-    Write-Host "`nHand this .exe to friends. After install, run Switch-FluxerInstance.ps1" -ForegroundColor Green
-    Write-Host "to point it at your server (it defaults to web.fluxer.app otherwise)."
+    if ($DefaultServer) {
+        Write-Host "`nHand this .exe to friends -- on install it auto-connects to:" -ForegroundColor Green
+        Write-Host "  $DefaultServer"
+        Write-Host "(They can still switch later with Switch-FluxerInstance.ps1.)" -ForegroundColor DarkGray
+    } else {
+        Write-Host "`nHand this .exe to friends. After install, run Switch-FluxerInstance.ps1" -ForegroundColor Green
+        Write-Host "to point it at your server (it defaults to web.fluxer.app otherwise)."
+        Write-Host "Tip: rebuild with -DefaultServer <url> to bake the server into the installer." -ForegroundColor DarkGray
+    }
 } else {
     Write-Host "`nBuild finished but no .exe found in $OutDir" -ForegroundColor Yellow
     Write-Host "Check the electron-builder output above; artifacts list:"
