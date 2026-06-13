@@ -23,9 +23,12 @@ rtc:
   use_external_ip: true
 
 turn:
-  # Embedded TURN relay — helps clients on restrictive networks. Forward 3478/udp.
+  # Embedded TURN relay — helps clients on restrictive networks. Forward 3479/udp.
+  # NOTE: 3478 (the TURN default) is already taken on this NAS by nextcloud-aio-talk
+  # and Screego, so we use 3479 here. Keep this in sync with the compose port mapping
+  # and the router forward.
   enabled: true
-  udp_port: 3478
+  udp_port: 3479
 
 webhook:
   # LiveKit signs webhooks with this key and POSTs participant join/leave events to

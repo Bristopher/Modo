@@ -247,7 +247,13 @@ docker compose -f compose.yaml -f compose.localhost.yaml -f compose.unraid.yaml 
 | --- | --- | --- |
 | 7882 | UDP | Primary RTC media (muxed) |
 | 7881 | TCP | ICE TCP fallback (clients that can't do UDP) |
-| 3478 | UDP | Embedded TURN relay |
+| 3479 | UDP | Embedded TURN relay |
+
+> **TURN port note:** the LiveKit/TURN default is **3478**, but on this NAS that port is already
+> taken by `nextcloud-aio-talk` and `Screego`, so we moved TURN to **3479**. This is set in three
+> places that must agree: `config/livekit.yaml` → `turn.udp_port: 3479`, the `livekit` `ports:`
+> mapping in `unraid/compose.yaml` (`'3479:3479/udp'`), and the router forward (3479/udp). If you
+> ever free up 3478, you can move it back by syncing those three.
 
 These go to the Unraid host; the `livekit` container publishes them. Signaling (7880) does **not**
 need forwarding — it rides the existing 443 → Caddy → `livekit:7880` path. If voice connects but

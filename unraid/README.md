@@ -118,7 +118,8 @@ Proxy host:
 
 ### Router port forwards
 - **80 / 443 TCP** → your NPM host (for the web app + TLS).
-- **Voice only** (if using LiveKit): **7882/udp**, **7881/tcp**, **3478/udp** → the NAS.
+- **Voice only** (if using LiveKit): **7882/udp**, **7881/tcp**, **3479/udp** → the NAS.
+  (TURN is on **3479**, not the 3478 default, because nextcloud-aio-talk + Screego already use 3478 on this NAS. The port lives in `config/livekit.yaml` `turn.udp_port` and the livekit `ports:` mapping in `compose.yaml` — keep all three in sync.)
 
 ---
 

@@ -136,7 +136,8 @@ when `config/` / `compose.yaml` change.)
 **Reverse proxy + DNS:**
 - [ ] NPM (on `bignet`): proxy host → `http` → **`caddy`** : **`8080`**, Websockets ON, Let's Encrypt
       cert, Force SSL. Advanced: `client_max_body_size 100M;`
-- [ ] Router: forward **80/443 TCP** → NPM. Voice: **7882/udp, 7881/tcp, 3478/udp** → NAS.
+- [ ] Router: forward **80/443 TCP** → NPM. Voice: **7882/udp, 7881/tcp, 3479/udp** → NAS.
+      (TURN uses **3479** here — 3478 is taken by nextcloud-aio-talk + Screego. Set in `config/livekit.yaml` `turn.udp_port` + the livekit `ports:` mapping.)
 - [ ] DuckDNS updater is pointing `bigweld.duckdns.org` at your WAN IP (subdomains resolve for free).
 
 **Finish:**

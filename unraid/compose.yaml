@@ -166,11 +166,12 @@ services:
     volumes:
       - ${FLUXER_APPDATA:-.}/config/livekit.yaml:/etc/livekit/livekit.yaml:ro
     # Signaling (7880) is fronted by Caddy at /livekit. Media uses a single muxed UDP
-    # port + TCP fallback + TURN — forward 7882/udp, 7881/tcp, 3478/udp on your router.
+    # port + TCP fallback + TURN — forward 7882/udp, 7881/tcp, 3479/udp on your router.
+    # TURN is on 3479 (not the 3478 default) because nextcloud-aio-talk + Screego own 3478.
     ports:
       - '7881:7881/tcp'
       - '7882:7882/udp'
-      - '3478:3478/udp'
+      - '3479:3479/udp'
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:7880 || exit 1']
       interval: 15s
