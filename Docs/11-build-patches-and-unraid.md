@@ -45,6 +45,16 @@ Each is marked in-code with a `Self-host patch:` comment.
 | 13 | `config/*.template.json` | `services.s3.data_dir` = **absolute** `/usr/src/app/data/s3` | Same cwd trap — uploads silently land in the container's writable layer, lost on rebuild |
 | 14 | `config/*.template.json` | `domain.endpoint_overrides.static_cdn` = `https://fluxerstatic.com/static` | Points emoji/font fetches at the public CDN (server independently derives the same host via `CdnEndpoints.STATIC_HOST`) |
 
+### Self-host behavior changes (intentional divergences from upstream defaults)
+
+These deliberately change how the app behaves by default for this deployment. Noted here so a
+future me (or an upstream merge) knows they were on purpose, not accidental.
+
+| # | What changed | File(s) | Why |
+| --- | --- | --- | --- |
+| B1 | **NSFW image scanning is OFF by default** here. Added a `FLUXER_DISABLE_NSFW` env var (`true`/`1`/`yes`) that makes `NSFWDetectionService` skip loading the ONNX model and report all media as non-NSFW. | `packages/media_proxy/src/lib/NSFWDetectionService.tsx`; wired in `unraid/compose.yaml` + staged `.env` (`FLUXER_DISABLE_NSFW=true`) | The image is built slim (`INCLUDE_NSFW_ML=false`), so `/opt/data/model.onnx` doesn't exist — but `initialize()` upstream reads it unconditionally and crashes the server on boot. The env var lets us run model-free. Set to `false` (and build with `INCLUDE_NSFW_ML=true`) to re-enable scanning. |
+| B2 | **Voice/LiveKit is always-on** (removed the `profiles: ['voice']` gate). | `unraid/compose.yaml` | This deploy always wants voice; the profile gate meant a plain `compose up` / Compose Manager "Up" skipped LiveKit and forced a per-launch flag. Removing it makes LiveKit a normal service. |
+
 ### Design note: the domain is baked in at build time
 
 `rspack` reads `FLUXER_CONFIG` and **hardcodes** the api/gateway/media/static URLs into the bundle.

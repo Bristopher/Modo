@@ -72,6 +72,9 @@ FLUXER_SMTP_PASSWORD=$smtp
 # Absolute path to the unraid/ folder ON THE NAS — Compose Manager needs this to find config/.
 # Edit if you put the stack somewhere else.
 FLUXER_APPDATA=/mnt/user/nvme_array/appdata/Fluxer/unraid
+# NSFW image scanning OFF (slim image has no ONNX model). Set to false to re-enable
+# (requires the model baked in via INCLUDE_NSFW_ML=true at build time).
+FLUXER_DISABLE_NSFW=true
 "@ | Set-Content unraid/.env
 
 Write-Host ''

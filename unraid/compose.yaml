@@ -75,6 +75,9 @@ services:
       NODE_ENV: production
       # SMTP password injected from .env (never baked into config.json).
       FLUXER_CONFIG__INTEGRATIONS__EMAIL__SMTP__PASSWORD: ${FLUXER_SMTP_PASSWORD:-}
+      # Set FLUXER_DISABLE_NSFW=true in .env to turn off NSFW image scanning (skips the
+      # ONNX model load — required for the slim image built with INCLUDE_NSFW_ML=false).
+      FLUXER_DISABLE_NSFW: ${FLUXER_DISABLE_NSFW:-false}
     depends_on:
       valkey:
         condition: service_healthy

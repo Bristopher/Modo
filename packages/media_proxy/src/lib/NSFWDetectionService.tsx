@@ -40,15 +40,25 @@ export class NSFWDetectionService {
 	private session: ort.InferenceSession | null = null;
 	private readonly NSFW_THRESHOLD = 0.85;
 	private modelPath: string;
+	// Self-host toggle: set FLUXER_DISABLE_NSFW=true (or 1) to skip loading the ONNX model
+	// entirely and treat all media as non-NSFW. Lets the slim image (INCLUDE_NSFW_ML=false)
+	// run without /opt/data/model.onnx. Default: scanning enabled.
+	private readonly disabled: boolean;
 
 	constructor(options?: {modelPath?: string | undefined; nodeEnv?: string | undefined}) {
 		const nodeEnv = options?.nodeEnv ?? 'production';
+		const flag = process.env.FLUXER_DISABLE_NSFW?.toLowerCase();
+		this.disabled = flag === 'true' || flag === '1' || flag === 'yes';
 		this.modelPath =
 			options?.modelPath ??
 			(nodeEnv === 'production' ? '/opt/data/model.onnx' : path.join(process.cwd(), 'data', 'model.onnx'));
 	}
 
 	async initialize(): Promise<void> {
+		if (this.disabled) {
+			// NSFW scanning disabled via FLUXER_DISABLE_NSFW — do not load the model.
+			return;
+		}
 		const modelBuffer = await fs.readFile(this.modelPath);
 		this.session = await ort.InferenceSession.create(modelBuffer);
 	}
@@ -59,6 +69,14 @@ export class NSFWDetectionService {
 	}
 
 	async checkNSFWBuffer(buffer: Buffer): Promise<NSFWCheckResult> {
+		if (this.disabled) {
+			// Scanning disabled — report everything as non-NSFW.
+			return {
+				isNSFW: false,
+				probability: 0,
+				predictions: {drawing: 0, hentai: 0, neutral: 1, porn: 0, sexy: 0},
+			};
+		}
 		if (!this.session) {
 			throw new Error('NSFW Detection service not initialized');
 		}
