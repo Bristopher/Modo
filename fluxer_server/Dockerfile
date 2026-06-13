@@ -89,16 +89,25 @@ FROM deps AS app-build
 
 # Self-host patch (Gotcha: missing wasm32 target). The frontend compiles a Rust crate
 # (crates/libfluxcore) to WASM via wasm-pack during `pnpm build`. The apt rustc has no
-# wasm32-unknown-unknown target, so install the rustup toolchain + target + wasm-pack.
+# wasm32-unknown-unknown target, so install the rustup toolchain + target.
 RUN apt-get update && apt-get install -y --no-install-recommends \
 	curl ca-certificates build-essential \
 	&& rm -rf /var/lib/apt/lists/*
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
 	--default-toolchain stable --profile minimal && \
 	. "$HOME/.cargo/env" && \
-	rustup target add wasm32-unknown-unknown && \
-	cargo install wasm-pack
+	rustup target add wasm32-unknown-unknown
 ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Self-host patch: wasm-pack itself. The npm wasm-pack@0.14.0 build script is disabled
+# (pnpm-workspace.yaml) because it fetches from the dead drager/wasm-pack URL. Pull the
+# same statically-linked (musl) v0.14.0 binary from the project's new home instead —
+# seconds vs minutes for `cargo install`, and pins the exact version the repo expects.
+RUN curl -fsSL https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.14.0/wasm-pack-v0.14.0-x86_64-unknown-linux-musl.tar.gz \
+	| tar xz -C /tmp && \
+	install -m755 /tmp/wasm-pack-v0.14.0-x86_64-unknown-linux-musl/wasm-pack /usr/local/bin/wasm-pack && \
+	rm -rf /tmp/wasm-pack-* && \
+	wasm-pack --version
 
 # Self-host patch (Gotcha: FLUXER_CONFIG unavailable at build time). rspack.config.mjs
 # reads $FLUXER_CONFIG to bake endpoint URLs (api/gateway/media/static_cdn) into the
@@ -113,6 +122,10 @@ COPY tsconfigs /usr/src/app/tsconfigs
 COPY packages/ ./packages/
 RUN pnpm --filter @fluxer/config generate
 COPY fluxer_app/ ./fluxer_app/
+
+# Remove the disabled npm wasm-pack's bin shims (left dangling since its postinstall was
+# declined) so `wasm-pack` in the build script resolves to /usr/local/bin/wasm-pack.
+RUN rm -f node_modules/.bin/wasm-pack fluxer_app/node_modules/.bin/wasm-pack
 
 RUN cd fluxer_app && pnpm build
 

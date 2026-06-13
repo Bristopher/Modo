@@ -31,7 +31,11 @@ allowBuilds:
   ssh2: true
   sqlite3: true
   uiohook-napi: true
-  wasm-pack: true
+  # Self-host patch: the npm wasm-pack@0.14.0 postinstall downloads its prebuilt binary
+  # from github.com/drager/wasm-pack, which MOVED to github.com/wasm-bindgen/wasm-pack —
+  # the old URL now 404s and (with strictDepBuilds) fails the whole install. Decline the
+  # build script here; the Dockerfile fetches the same binary from the new home instead.
+  wasm-pack: false
 blockExoticSubdeps: true
 minimumReleaseAge: 1440
 strictDepBuilds: true

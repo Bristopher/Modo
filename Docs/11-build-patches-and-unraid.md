@@ -31,6 +31,7 @@ Each is marked in-code with a `Self-host patch:` comment.
 | 6 | `fluxer_app/package.json` | Removed `tsgo --noEmit &&` from `build` | It runs *before* `lingui:compile`, so locale `.mjs` don't exist yet → type errors. Types are still checked in the `build` stage's `pnpm typecheck`. |
 | 7 | `fluxer_server/Dockerfile` (`build`) | Added `pnpm --filter @fluxer/admin build:css` | Admin panel CSS is never compiled upstream (needed to grant premium / manage instance). **Guide said `--filter admin` — wrong here; the package is `@fluxer/admin`.** |
 | 8 | `fluxer_server/Dockerfile` | `ENTRYPOINT ["pnpm","--filter","fluxer_server","start"]` | Root workspace has no `start` script |
+| 8b | `pnpm-workspace.yaml` + `Dockerfile` (`app-build`) | Set `wasm-pack: false` in `allowBuilds`; fetch the `v0.14.0` binary from `github.com/wasm-bindgen/wasm-pack` and `rm` the npm bin shim | The npm `wasm-pack@0.14.0` postinstall downloads from `github.com/drager/wasm-pack`, which **moved** to `wasm-bindgen/wasm-pack` — the old URL 404s and (with `strictDepBuilds: true`) fails the entire `pnpm install`. Not in either guide — surfaced on first real build (the repo move post-dates them). |
 
 ### Asset / runtime correctness
 
