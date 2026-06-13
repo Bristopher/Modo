@@ -27,6 +27,7 @@ instance from the public monorepo (`github.com/fluxerapp/fluxer`).
 | [10-turnkey-localhost.md](./10-turnkey-localhost.md) | One-command local instance: Caddy + Mailpit override, localhost config, secret seeder, run steps (**not yet runtime-verified**) |
 | [11-build-patches-and-unraid.md](./11-build-patches-and-unraid.md) | **The ~14 source patches** that make the image build/run (from the PaulMColeman + mgabor3141 guides) + an **Unraid + reverse-proxy + duckdns** deployment walkthrough |
 | [12-setup-and-migration.md](./12-setup-and-migration.md) | **Operations guide** — fresh setup, **changing the domain** (why it needs a rebuild), **moving to a new machine** (what secrets/data to carry), and backups |
+| [13-supply-chain-security.md](./13-supply-chain-security.md) | **npm supply-chain safety** — the built-in pnpm defenses (24h release-age gate, build-script allowlist), a lockfile scan vs. the 2025 compromised packages, and why our patches don't widen the attack surface |
 
 ## Quick orientation
 

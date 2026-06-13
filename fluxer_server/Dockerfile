@@ -104,9 +104,11 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # same statically-linked (musl) v0.14.0 binary from the project's new home instead —
 # seconds vs minutes for `cargo install`, and pins the exact version the repo expects.
 RUN curl -fsSL https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.14.0/wasm-pack-v0.14.0-x86_64-unknown-linux-musl.tar.gz \
-	| tar xz -C /tmp && \
+	-o /tmp/wasm-pack.tgz && \
+	echo "278a8d668085821f4d1a637bd864f1713f872b0ae3a118c77562a308c0abfe8d  /tmp/wasm-pack.tgz" | sha256sum -c - && \
+	tar xz -C /tmp -f /tmp/wasm-pack.tgz && \
 	install -m755 /tmp/wasm-pack-v0.14.0-x86_64-unknown-linux-musl/wasm-pack /usr/local/bin/wasm-pack && \
-	rm -rf /tmp/wasm-pack-* && \
+	rm -rf /tmp/wasm-pack* && \
 	wasm-pack --version
 
 # Self-host patch (Gotcha: FLUXER_CONFIG unavailable at build time). rspack.config.mjs
