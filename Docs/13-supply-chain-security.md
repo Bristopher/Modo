@@ -51,10 +51,10 @@ done
 
 - **`wasm-pack: false`** — we *removed* a package from the build-script allow-list. Strictly
   safer (one fewer postinstall can run).
-- **External binary fetches are pinned + checksummed.** The wasm-pack binary we pull in the
-  Dockerfile is verified against a SHA-256 (`sha256sum -c`), so a swapped/tampered artifact
-  fails the build. (rebar3 in the gateway image is fetched from its official GitHub release
-  over HTTPS; pin its checksum too if you want belt-and-suspenders.)
+- **Every external binary fetch is pinned + checksummed.** Both `wasm-pack` (app-build) and
+  `rebar3` (both gateway-build stages) are verified against a SHA-256 (`sha256sum -c`), so a
+  swapped or tampered artifact fails the build instead of running. These are the only
+  non-registry downloads in the build.
 - **No secrets at build time.** The build container only sees `FLUXER_BUILD_CONFIG` (your
   public domain — not secret). `config/config.json` (the keyring) is mounted to the
   **runtime** container via volume, never baked into the image. So even a hypothetical

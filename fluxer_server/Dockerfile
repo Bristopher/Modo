@@ -75,6 +75,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	&& rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://github.com/erlang/rebar3/releases/download/3.24.0/rebar3 -o /usr/local/bin/rebar3 && \
+	echo "d2d31cfb98904b8e4917300a75f870de12cb5167cd6214d1043e973a56668a54  /usr/local/bin/rebar3" | sha256sum -c - && \
 	chmod +x /usr/local/bin/rebar3
 
 COPY fluxer_gateway/rebar.config fluxer_gateway/rebar.lock* ./
