@@ -11,6 +11,7 @@ instance from the public monorepo (`github.com/fluxerapp/fluxer`).
 
 | Doc | What it covers |
 | --- | --- |
+| **[RUNNING.md](./RUNNING.md)** | **Start here to run it** — step-by-step Docker (localhost) and devenv (WSL2) instructions + troubleshooting |
 | [01-architecture-overview.md](./01-architecture-overview.md) | Monorepo map, every service, ports, and how they fit together |
 | [02-self-hosting-status.md](./02-self-hosting-status.md) | What works today, the critical gap in `compose.yaml`, what's blocking a clean self-host |
 | [03-running-on-windows.md](./03-running-on-windows.md) | Path A — standing it up on this Windows 11 box (devenv/WSL2 vs Docker), env audit |

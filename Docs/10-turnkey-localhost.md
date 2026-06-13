@@ -67,17 +67,41 @@ Then:
 
 Tear down: `docker compose -f compose.yaml -f compose.localhost.yaml down` (add `-v` to wipe data).
 
-## Likely first-run issues to watch for (unverified)
+## Config rationale (verified against the code)
 
-1. **Umbrella serving the SPA at `/`** — assumed combined mode serves the built app via
-   app_proxy. If `/` 404s, the app assets may need a separate build/serve step; check
-   `fluxer_server` Routes + `deploy-app.yaml` for the prod asset path.
-2. **Missing `integrations.search`** — omitted to avoid running Meilisearch. If the server hard-
-   requires it, add it back and run `--profile search` (note: that also starts Elasticsearch).
-3. **S3/media** — `s3.endpoint` points at the umbrella's own `:8080/s3`; confirm the embedded S3
-   shim is enabled in the image, else media uploads fail and you'll want MinIO.
-4. **Gateway build** — needs network to pull `erlang:28-slim` + rebar3 deps.
-5. **First-run DB init** — dev uses `dev_bootstrap.sh` for migrations; the umbrella image should
-   self-migrate on start, but verify SQLite at the `fluxer_data` volume gets created.
+These choices were checked against `ServiceInitializer.tsx`, `ConfigLoader.tsx`, and the JSON
+schema (`packages/config/src/schema/`), not guessed:
+
+- **`services.server.static_dir: /usr/src/app/assets` is mandatory.** The SPA only mounts at `/`
+  when `static_dir` is set (`Routes.tsx:158`, `ServiceInitializer.tsx:408`). It has **no schema
+  default** ("Required in production"). The Dockerfile builds the app to `/usr/src/app/assets`,
+  but its `ENV FLUXER_SERVER_STATIC_DIR=...` is **dead** — the loader only honors env vars
+  prefixed `FLUXER_CONFIG__` (`EnvironmentOverrides.tsx:68`). So it must be in `config.json`.
+  Without it you get an API-only server and `/` 404s.
+- **Monolith mode is the default.** `instance.deployment_mode` defaults to `monolith`
+  (`schema/defs/instance.json`) → `isMonolith=true`, single process, S3 mounted at `/s3`, media
+  proxy in "public-only" mode. We don't set `instance`, so this applies. `internal.kv` is still
+  required (`Config.tsx:24`) and is set.
+- **No Meilisearch needed.** Search omitted intentionally; the image targets SQLite search.
+  `integrations` defaults to `{}` and isn't required at the root. (If a run shows search errors,
+  add `integrations.search` + `--profile search`.)
+- **S3/media need no extra config.** Global `s3` only requires `access_key_id` +
+  `secret_access_key` (seeded). `region` (`local`), `endpoint`, and all `buckets` (cdn=`fluxer`,
+  uploads=`fluxer-uploads`, …) come from schema defaults; `services.s3.{data_dir,host,port}`
+  default too (`./data/s3`, `0.0.0.0:3900`). The embedded S3 is mounted at `/s3` in monolith mode.
+- **Secrets/keys** filled by `seed_config.mjs`; admin/proxy/cookie all have schema defaults.
+
+> Override any config field via env without editing JSON using the `FLUXER_CONFIG__` prefix and
+> `__` as the path separator, e.g. `FLUXER_CONFIG__SERVICES__SERVER__STATIC_DIR=/usr/src/app/assets`.
+
+## Still to confirm on first real boot
+
+1. **Gateway build** — needs network to pull `erlang:28-slim` + rebar3 deps (first build only).
+2. **DB auto-migration** — the umbrella should create/migrate SQLite at the `fluxer_data` volume
+   on start (no `dev_bootstrap` in prod). Watch `fluxer_server` logs for migration output.
+3. **Presigned media URLs** — `s3.presigned_url_base` defaults to the internal endpoint
+   (`127.0.0.1:8080/s3`). In monolith mode media is served signed via `/media`, so this should be
+   fine, but verify image/attachment loading.
+4. **Realtime** — confirm `fluxer_gateway` is healthy and reaching `nats` (RPC subject `rpc.api`).
 
 Capture whatever actually happens on first boot back into this file + [07](./07-self-hosting-roadmap.md).
