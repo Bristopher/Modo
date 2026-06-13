@@ -73,6 +73,9 @@ services:
         # static_cdn points at the public CDN so emoji/font assets resolve.
         FLUXER_BUILD_CONFIG: >-
           {"domain":{"base_domain":"${BASE_DOMAIN:-localhost}","public_scheme":"${PUBLIC_SCHEME:-http}","public_port":${PUBLIC_PORT:-8080},"endpoint_overrides":{"static_cdn":"https://fluxerstatic.com/static"}}}
+        # Bake the NSFW ONNX model into the image (copies model.onnx to /opt/data). The
+        # server reads it unconditionally on boot, so without this it crashes with ENOENT.
+        INCLUDE_NSFW_ML: "true"
     image: fluxer-server:local
     ports: !reset []
   fluxer_gateway:
