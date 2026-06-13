@@ -101,6 +101,56 @@ Register in the app, get the code from `https://your.domain/mailpit/`, done. Fir
 
 ---
 
+## A2. First Unraid boot (prebuilt images — the real-world flow)
+
+Section A builds *on the same machine* it runs on. On Unraid you instead **build on Windows** and ship
+**prebuilt images** to the NAS — the NAS never sees the source. This is the checklist for that. See
+[`unraid/README.md`](../unraid/README.md) for the per-command detail.
+
+The whole flow in one line: **seed + build on Windows → push/ship images → pull/load on Unraid →
+`bignet` + NPM → register admin.**
+
+**On the Windows dev box (once):**
+- [ ] Docker Desktop → Settings → Docker Engine: add `"insecure-registries": ["192.168.1.200:5024"]`,
+      Apply & Restart. *(Registry path only; skip for the tar path.)*
+
+**On the Windows dev box (each deploy):**
+- [ ] **Registry path:** `pwsh -File scripts/build_and_push.ps1 -Registry 192.168.1.200:5024`
+      — seeds `config/config.json` for the domain, builds with the domain baked in, pushes both
+      images, and stages `unraid/config/` + `unraid/.env` (image refs → `localhost:5024/...`).
+- [ ] **Tar path instead:** `pwsh -File scripts/build_for_unraid.ps1` — same, but writes
+      `unraid/fluxer-images.tar` (no push).
+- [ ] Confirm `unraid/config/config.json` has your domain and **real secrets** (not `GENERATE`/`CHANGE`
+      placeholders), and `unraid/.env` carries `FLUXER_SMTP_PASSWORD`.
+
+**Copy to the NAS** (e.g. `/mnt/user/appdata/fluxer/`): the whole `unraid/` folder — `compose.yaml`,
+`.env`, `config/`, plus `fluxer-images.tar` if you used the tar path. (Only needed the first time, or
+when `config/` / `compose.yaml` change.)
+
+**On Unraid (first boot):**
+- [ ] `docker network create bignet` *(if it doesn't already exist)*
+- [ ] **Registry path:** `docker compose pull`  •  **Tar path:** `docker load -i fluxer-images.tar`
+- [ ] `docker compose --profile voice up -d` *(drop `--profile voice` if not using voice)*
+- [ ] `docker compose ps` — wait until `fluxer_server`, `fluxer_gateway`, `caddy` are **healthy**.
+
+**Reverse proxy + DNS:**
+- [ ] NPM (on `bignet`): proxy host → `http` → **`caddy`** : **`8080`**, Websockets ON, Let's Encrypt
+      cert, Force SSL. Advanced: `client_max_body_size 100M;`
+- [ ] Router: forward **80/443 TCP** → NPM. Voice: **7882/udp, 7881/tcp, 3478/udp** → NAS.
+- [ ] DuckDNS updater is pointing `bigweld.duckdns.org` at your WAN IP (subdomains resolve for free).
+
+**Finish:**
+- [ ] Open `https://fluxer.bigweld.duckdns.org`, register the first account (it becomes admin), grab
+      the verification code from `/mailpit/` if Gmail SMTP hasn't delivered yet.
+- [ ] **Back up `unraid/config/config.json`** — it's the keyring; a re-seed makes new secrets and logs
+      everyone out.
+
+> **Updating later** (registry path): re-run `build_and_push.ps1` on Windows → on the NAS
+> `docker compose pull && docker compose --profile voice up -d`. Only changed layers transfer; no need
+> to recopy `unraid/` unless `config/` or `compose.yaml` changed.
+
+---
+
 ## B. Change the domain (new domain, same machine & data)
 
 You keep your database, uploads, and secrets — only the public hostname changes.
