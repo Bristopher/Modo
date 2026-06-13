@@ -1,7 +1,7 @@
 {
 	"$schema": "../packages/config/src/ConfigSchema.json",
 	"env": "production",
-	"_comment": "Production self-host template. base_domain MUST match the FLUXER_BUILD_CONFIG build arg (.env BASE_DOMAIN) — rspack bakes these endpoint URLs into the SPA at build time. TLS is terminated by your Unraid reverse proxy (NPM/SWAG); Caddy inside the stack speaks plain http on 8080. public_scheme/public_port describe the PUBLIC URL your browser hits (https/443), not Caddy's internal port.",
+	"_comment": "Production self-host template. base_domain MUST match the FLUXER_BUILD_CONFIG build arg (.env BASE_DOMAIN) \u2014 rspack bakes these endpoint URLs into the SPA at build time. TLS is terminated by your Unraid reverse proxy (NPM/SWAG); Caddy inside the stack speaks plain http on 8080. public_scheme/public_port describe the PUBLIC URL your browser hits (https/443), not Caddy's internal port.",
 	"domain": {
 		"base_domain": "fluxer.bigweld.duckdns.org",
 		"public_scheme": "https",
@@ -60,6 +60,10 @@
 		"vapid": {
 			"public_key": "GENERATE",
 			"private_key": "GENERATE"
+		},
+		"bluesky": {
+			"enabled": false,
+			"keys": []
 		}
 	},
 	"integrations": {
@@ -84,7 +88,7 @@
 			"default_region": {
 				"id": "default",
 				"name": "Default",
-				"emoji": "🌐",
+				"emoji": "\ud83c\udf10",
 				"latitude": 0.0,
 				"longitude": 0.0
 			}
