@@ -57,9 +57,15 @@ services:
         max-size: '10m'
         max-file: '5'
 
-  # Caddy fronts these — drop their direct host port bindings to avoid a clash
-  # with Caddy on :8080 (requires Docker Compose v2.24+ for the !reset tag).
+  # The published ghcr.io/fluxerapp/fluxer-server image is NOT publicly available
+  # (all tags denied — self-hosting is pre-release), so build it locally from
+  # source. Context is the repo root; the Dockerfile builds the API/app/gateway.
+  # Caddy fronts it, so drop the direct host port binding (!reset needs Compose v2.24+).
   fluxer_server:
+    build:
+      context: .
+      dockerfile: fluxer_server/Dockerfile
+    image: fluxer-server:local
     ports: !reset []
   fluxer_gateway:
     ports: !reset []

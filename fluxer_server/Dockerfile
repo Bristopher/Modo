@@ -23,37 +23,12 @@ COPY pnpm-lock.yaml ./
 COPY package.json ./
 COPY patches/ ./patches/
 
-COPY packages/admin/package.json ./packages/admin/
-COPY packages/api/package.json ./packages/api/
-COPY packages/app/package.json ./packages/app/
-COPY packages/cache/package.json ./packages/cache/
-COPY packages/captcha/package.json ./packages/captcha/
-COPY packages/cassandra/package.json ./packages/cassandra/
-COPY packages/config/package.json ./packages/config/
-COPY packages/constants/package.json ./packages/constants/
-COPY packages/email/package.json ./packages/email/
-COPY packages/errors/package.json ./packages/errors/
-COPY packages/hono/package.json ./packages/hono/
-COPY packages/hono_types/package.json ./packages/hono_types/
-COPY packages/initialization/package.json ./packages/initialization/
-COPY packages/ip_utils/package.json ./packages/ip_utils/
-COPY packages/logger/package.json ./packages/logger/
-COPY packages/marketing/package.json ./packages/marketing/
-COPY packages/media_proxy/package.json ./packages/media_proxy/
-COPY packages/oauth2/package.json ./packages/oauth2/
-COPY packages/queue/package.json ./packages/queue/
-COPY packages/rate_limit/package.json ./packages/rate_limit/
-COPY packages/s3/package.json ./packages/s3/
-COPY packages/sentry/package.json ./packages/sentry/
-COPY packages/sms/package.json ./packages/sms/
-COPY packages/snowflake/package.json ./packages/snowflake/
-COPY packages/telemetry/package.json ./packages/telemetry/
-COPY packages/ui/package.json ./packages/ui/
-COPY packages/validation/package.json ./packages/validation/
-COPY packages/virus_scan/package.json ./packages/virus_scan/
-COPY packages/worker/package.json ./packages/worker/
-COPY packages/http_client/package.json ./packages/http_client/
-COPY packages/schema/package.json ./packages/schema/
+# NOTE (local self-host patch): the upstream per-package manifest list is stale —
+# it references packages/app (removed) and omits many real packages (limits, i18n,
+# kv_client, date_utils, ...). Copy the whole packages/ tree so a frozen install
+# sees every workspace member. Trades layer-cache granularity for correctness;
+# fine for local self-host builds.
+COPY packages/ ./packages/
 COPY fluxer_server/package.json ./fluxer_server/
 COPY fluxer_app/package.json ./fluxer_app/
 
