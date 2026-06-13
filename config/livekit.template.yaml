@@ -1,0 +1,44 @@
+# LiveKit server config template for self-hosted Fluxer voice/video.
+# Rendered to config/livekit.yaml by scripts/seed_config.mjs (which fills the api
+# key/secret to match integrations.voice in config.json). Do NOT edit livekit.yaml by
+# hand — edit this template and re-seed, or the key/secret will drift from config.json.
+#
+# Networking choice: a SINGLE UDP port (udp_port) instead of a 50000-50100 range. The
+# range maps to 101 iptables rules in Docker and can hang the daemon (see the community
+# guide). One muxed UDP port needs just one forwarded port and is the modern default.
+
+# WebSocket signaling port. Fronted by Caddy at /livekit — not published to the host.
+port: 7880
+
+keys:
+  '{{LIVEKIT_API_KEY}}': '{{LIVEKIT_API_SECRET}}'
+
+rtc:
+  # ICE TCP fallback (for clients that can't do UDP). Forward 7881/tcp on the router.
+  tcp_port: 7881
+  # All RTC media muxed onto one UDP port. Forward 7882/udp on the router.
+  udp_port: 7882
+  # Detect the public WAN IP via STUN at startup so media is advertised correctly
+  # from behind NAT. Re-detected whenever the container restarts (covers dynamic IPs).
+  use_external_ip: true
+
+turn:
+  # Embedded TURN relay — helps clients on restrictive networks. Forward 3478/udp.
+  enabled: true
+  udp_port: 3478
+
+webhook:
+  # LiveKit signs webhooks with this key and POSTs participant join/leave events to
+  # Fluxer, so the server can reconcile voice state. Without it users get stuck in
+  # channels. The URL is the internal container address (LiveKit → fluxer_server).
+  api_key: '{{LIVEKIT_API_KEY}}'
+  urls:
+    - '{{WEBHOOK_URL}}'
+
+room:
+  auto_create: true
+  max_participants: 100
+  empty_timeout: 300
+
+logging:
+  level: info

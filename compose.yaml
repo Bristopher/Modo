@@ -48,6 +48,9 @@ services:
     environment:
       FLUXER_CONFIG: /usr/src/app/config/config.json
       NODE_ENV: production
+      # Inject the SMTP password from .env (gitignored) as a config override so the secret
+      # never lives in config.json. Empty for localhost/Mailpit (no auth needed) — harmless.
+      FLUXER_CONFIG__INTEGRATIONS__EMAIL__SMTP__PASSWORD: ${FLUXER_SMTP_PASSWORD:-}
     ports:
       - '${FLUXER_HTTP_PORT:-8080}:8080'
     depends_on:
@@ -147,11 +150,14 @@ services:
     command: ['--config', '/etc/livekit/livekit.yaml']
     volumes:
       - ./config/livekit.yaml:/etc/livekit/livekit.yaml:ro
+    # Signaling (7880) is fronted by Caddy at /livekit on the internal network, so it is
+    # NOT published. Media uses a SINGLE muxed UDP port (7882) + TCP fallback (7881) +
+    # TURN (3478) — forward these on your router. (The old 50000-50100 range mapping is
+    # avoided: 101 iptables rules can hang the Docker daemon — see the community guide.)
     ports:
-      - '${LIVEKIT_PORT:-7880}:7880'
-      - '7881:7881'
+      - '7881:7881/tcp'
+      - '7882:7882/udp'
       - '3478:3478/udp'
-      - '50000-50100:50000-50100/udp'
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:7880 || exit 1']
       interval: 15s

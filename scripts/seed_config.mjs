@@ -103,11 +103,36 @@ if (auth.vapid && (force || needs(auth.vapid.public_key) || needs(auth.vapid.pri
 const search = config.integrations?.search;
 if (search) setIfNeeded(search, 'api_key', () => hex(32), 'integrations.search.api_key');
 
-if (changed.length === 0) {
-	console.log('Nothing to seed — all secrets already set (use --force to regenerate).');
-	process.exit(0);
+// LiveKit voice: generate a key/secret pair (must match config/livekit.yaml).
+const voice = config.integrations?.voice;
+if (voice) {
+	setIfNeeded(voice, 'api_key', () => `fluxer_${hex(6)}`, 'integrations.voice.api_key');
+	setIfNeeded(voice, 'api_secret', () => hex(32), 'integrations.voice.api_secret');
 }
 
-writeFileSync(target, `${JSON.stringify(config, null, '\t')}\n`);
-console.log(`Seeded ${changed.length} field(s) in ${target}:`);
-for (const c of changed) console.log(`  - ${c}`);
+if (changed.length === 0) {
+	console.log('Nothing to seed — all secrets already set (use --force to regenerate).');
+} else {
+	writeFileSync(target, `${JSON.stringify(config, null, '\t')}\n`);
+	console.log(`Seeded ${changed.length} field(s) in ${target}:`);
+	for (const c of changed) console.log(`  - ${c}`);
+}
+
+// Render config/livekit.yaml from the template so its key/secret/webhook stay in sync
+// with integrations.voice. Only when voice is enabled and a template is present.
+if (voice?.enabled) {
+	const lkTpl = resolve('config/livekit.template.yaml');
+	const lkOut = resolve('config/livekit.yaml');
+	if (existsSync(lkTpl)) {
+		const rendered = readFileSync(lkTpl, 'utf8')
+			.replaceAll('{{LIVEKIT_API_KEY}}', voice.api_key ?? '')
+			.replaceAll('{{LIVEKIT_API_SECRET}}', voice.api_secret ?? '')
+			.replaceAll('{{WEBHOOK_URL}}', voice.webhook_url ?? 'http://fluxer_server:8080/api/webhooks/livekit');
+		if (!existsSync(lkOut) || force) {
+			writeFileSync(lkOut, rendered);
+			console.log(`Rendered ${lkOut} from livekit.template.yaml (voice enabled).`);
+		} else {
+			console.log(`Left existing ${lkOut} untouched (use --force to re-render).`);
+		}
+	}
+}

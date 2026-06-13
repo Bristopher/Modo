@@ -24,6 +24,15 @@
 		reverse_proxy fluxer_gateway:8082
 	}
 
+	# LiveKit voice/video signaling (WebSocket). Only present with --profile voice.
+	# Client connects to wss://<domain>/livekit; strip the prefix before proxying.
+	# Media (RTP) does NOT go through here — it's direct UDP to the published ports.
+	@livekit path /livekit /livekit/*
+	handle @livekit {
+		uri strip_prefix /livekit
+		reverse_proxy livekit:7880
+	}
+
 	# Dev email inbox (Mailpit). Only present when the localhost override is used.
 	redir /mailpit /mailpit/
 	handle_path /mailpit/* {

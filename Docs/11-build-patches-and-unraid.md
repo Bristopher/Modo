@@ -195,15 +195,50 @@ docker push <youruser>/fluxer-gateway:latest
 
 (AGPLv3: if you publish a modified server others can reach, you must offer them your modified source.)
 
-## Voice (LiveKit) — when you get to it
+## Email (SMTP) — wired
 
-From mgabor3141's guide, the sharp edges:
-- **Do not** map the UDP media range (`50000-50100:…/udp`) — 101 iptables rules can hang Docker's
-  networking. Use `network_mode: host` for the LiveKit container instead.
-- Forward **3479/udp** (TURN), **7881/tcp** (ICE TCP), **7882/udp** (RTP) on the router.
-- Set `rtc.use_external_ip: true`, `node_ip: <wan-ip>` (or a DDNS-resolve entrypoint for dynamic IPs).
-- Add a `webhook` block in `config/livekit.yaml` → `https://bigweld.duckdns.org/api/webhooks/livekit`,
-  else participants get stuck in channels.
+The duckdns template uses real Gmail SMTP (`smtp.gmail.com:465`, secure). The app **password is
+never committed**: it lives in `.env` as `FLUXER_SMTP_PASSWORD` (gitignored) and is injected into
+the server at runtime via `FLUXER_CONFIG__INTEGRATIONS__EMAIL__SMTP__PASSWORD` (set on the
+`fluxer_server` service in `compose.yaml`). To change it, edit `.env` and `up -d` again — no rebuild.
 
-Our `compose.yaml` already has a `livekit` service under `--profile voice`; the host-networking +
-webhook changes are still TODO there.
+> Gmail requires an **App Password** (not your account password) with 2FA enabled, and the
+> `from_email` must be the authenticated account or a configured alias. Strip the spaces Google
+> shows. If mail silently fails, check the server logs and that the App Password is still valid.
+
+## Voice (LiveKit) — wired
+
+Voice is fully configured under `--profile voice`. What was set up:
+
+- **`config/livekit.template.yaml`** → rendered to `config/livekit.yaml` (gitignored) by the seeder,
+  with the API key/secret matching `integrations.voice` in `config.json`.
+- **Single muxed UDP port** (`rtc.udp_port: 7882`) instead of the `50000-50100` range — that range
+  maps to 101 iptables rules and can hang the Docker daemon (mgabor3141's guide). One port, one
+  rule. No `network_mode: host` needed.
+- **`rtc.use_external_ip: true`** — LiveKit auto-detects your WAN IP via STUN at startup (re-detected
+  on restart, so it tolerates your dynamic DuckDNS IP). No hardcoded `node_ip`.
+- **Webhook** → `http://fluxer_server:8080/api/webhooks/livekit` (internal container address), so
+  participant join/leave events reconcile and users don't get stuck in channels.
+- **Caddy** routes `wss://<domain>/livekit` → `livekit:7880` (signaling only; media is direct UDP).
+
+### Bring up voice
+
+```bash
+# seed (generates the voice key/secret + renders config/livekit.yaml)
+node scripts/seed_config.mjs config/config.json --from config/config.duckdns.template.json
+# start the stack WITH the voice profile
+docker compose -f compose.yaml -f compose.localhost.yaml -f compose.unraid.yaml --profile voice up -d
+```
+
+### Router port-forwards for voice (in addition to 80/443)
+
+| Port | Proto | Purpose |
+| --- | --- | --- |
+| 7882 | UDP | Primary RTC media (muxed) |
+| 7881 | TCP | ICE TCP fallback (clients that can't do UDP) |
+| 3478 | UDP | Embedded TURN relay |
+
+These go to the Unraid host; the `livekit` container publishes them. Signaling (7880) does **not**
+need forwarding — it rides the existing 443 → Caddy → `livekit:7880` path. If voice connects but
+has no audio, it's almost always one of these three UDP/TCP forwards missing, or `use_external_ip`
+detecting the wrong IP (set `rtc.node_ip: <wan-ip>` in the template and re-seed `--force` to pin it).

@@ -65,13 +65,27 @@
 		"email": {
 			"enabled": true,
 			"provider": "smtp",
-			"from_email": "noreply@fluxer.bigweld.duckdns.org",
+			"from_email": "bigweldindustrie@gmail.com",
 			"smtp": {
-				"host": "mailpit",
-				"port": 1025,
-				"username": "",
+				"host": "smtp.gmail.com",
+				"port": 465,
+				"username": "bigweldindustrie@gmail.com",
 				"password": "",
-				"secure": false
+				"secure": true
+			}
+		},
+		"voice": {
+			"enabled": true,
+			"api_key": "GENERATE",
+			"api_secret": "GENERATE",
+			"url": "wss://fluxer.bigweld.duckdns.org/livekit",
+			"webhook_url": "http://fluxer_server:8080/api/webhooks/livekit",
+			"default_region": {
+				"id": "default",
+				"name": "Default",
+				"emoji": "🌐",
+				"latitude": 0.0,
+				"longitude": 0.0
 			}
 		}
 	}
