@@ -44,6 +44,7 @@ Each is marked in-code with a `Self-host patch:` comment.
 | 12 | `config/*.template.json` | `database.sqlite_path` = **absolute** `/usr/src/app/data/fluxer.db` | Relative path resolves against pnpm's cwd (`fluxer_server/`) → DB on the wrong/ephemeral path |
 | 13 | `config/*.template.json` | `services.s3.data_dir` = **absolute** `/usr/src/app/data/s3` | Same cwd trap — uploads silently land in the container's writable layer, lost on rebuild |
 | 14 | `config/*.template.json` | `domain.endpoint_overrides.static_cdn` = `https://fluxerstatic.com/static` | Points emoji/font fetches at the public CDN (server independently derives the same host via `CdnEndpoints.STATIC_HOST`) |
+| 15 | `config/*.template.json` | `services.queue.data_dir` = **absolute** `/usr/src/app/data/queue` | Same cwd trap as #12/#13 — the durable job-queue store (`queue_service.data_dir` default `./data/queue`) would otherwise sit on the ephemeral layer and lose in-flight jobs on rebuild |
 
 ### Self-host behavior changes (intentional divergences from upstream defaults)
 
@@ -93,6 +94,7 @@ So the **build is domain-specific**. We drive it from `.env`:
 | **SSO / OIDC** (Zitadel, Keycloak, Pocket ID…) | URLSearchParams `.toString()`, `includeSecret:true`, client_secret in body, unclaimed-account trait, `/auth/sso/` standalone route, callback `clearTimeout` | Skipped — we use password auth. Apply if you wire an IdP. |
 | **Voice/video (LiveKit)** | webhook config, host networking (UDP range port-mapping hangs Docker), `node_ip`/DDNS, voice-states-in-READY Erlang fix | Skipped — add via `--profile voice` later; see notes below. |
 | **Klipy GIF picker** | webm→gif fallback in `KlipyService.tsx` | Skipped — cosmetic third-party integration. |
+| **Postgres database backend** | — none exist — | **Not possible without forking.** `database.backend` is `sqlite`\|`cassandra` only; zero Postgres code in the tree. SQLite is the correct single-node backend (faster than a containerized SQL server here); Cassandra is the scale-out path. Adding Postgres = a new storage adapter + perpetual upstream-merge maintenance. |
 
 ## Building & running
 
@@ -111,6 +113,65 @@ docker compose -f compose.yaml -f compose.localhost.yaml up -d
 
 > First `fluxer_server` build is **long** — it compiles a Rust→WASM crate, an Erlang OTP release,
 > and the full SPA. Your 3 Gbps line helps with the image pulls; the compile is CPU-bound.
+
+## Data persistence — the relative-path trap (we lost the DB once; don't repeat it)
+
+**What happened (2026-06-14):** a routine `fluxer_server` rebuild wiped the entire database — the
+account and all server data. Root cause was a chain of three things, every one of which has to be
+right or your data evaporates on the next rebuild:
+
+1. **Relative paths resolve against the wrong cwd.** `fluxer_server` runs via
+   `pnpm --filter fluxer_server start`, so its working directory is **`/usr/src/app/fluxer_server/`**,
+   not `/usr/src/app/`. A config value of `"./data/fluxer.db"` therefore lands at
+   `/usr/src/app/fluxer_server/data/fluxer.db` — **inside the container's writable layer**, which is
+   deleted when the container is recreated (every `build` / image change / `up -d` with a new image).
+2. **The persistent volume mounts elsewhere.** The data volume mounts at **`/usr/src/app/data`** — a
+   *different* directory from where the relative path resolved. So the DB was never on the volume.
+3. **Three separate stores all default to relative paths.** It's not just the DB:
+   - `database.sqlite_path` default `./data/fluxer.db` (the DB)
+   - `services.s3.data_dir` default `./data/s3` (**every uploaded file** — the built-in S3 store)
+   - `services.queue.data_dir` default `./data/queue` (durable job queue)
+
+   If a config omits the `services.s3` / `services.queue` blocks entirely (as a minimal hand-written
+   `config.json` easily can), they fall back to those relative defaults and ride the ephemeral layer.
+
+**The fix — two halves, both required:**
+
+- **Config:** all three paths pinned **absolute** under `/usr/src/app/data` (patches #12, #13, #15).
+- **Mount:** the data directory is a **host bind-mount**, not a Docker named volume. In
+  `unraid/compose.yaml` the `fluxer_server` volume is `${FLUXER_APPDATA:-.}/data:/usr/src/app/data`
+  (was the named volume `fluxer_data`). This puts the DB/uploads/queue at
+  `/mnt/user/nvme_array/appdata/Fluxer/unraid/data/` — a real directory on the array:
+  - survives `docker compose down -v` (named volumes don't),
+  - visible on disk and covered by **CA Appdata Backup**,
+  - obvious where it lives (no `docker volume inspect` archaeology).
+
+> A named volume would *also* survive plain rebuilds — but it's invisible, not in Appdata Backup, and
+> one `down -v` deletes it. The bind-mount is the belt-and-suspenders choice after getting burned.
+
+**Verify it actually persisted** (after first register + one upload):
+
+```bash
+# inside the container — all three should exist and grow
+docker exec fluxer_server sh -c 'ls -la /usr/src/app/data /usr/src/app/data/s3 /usr/src/app/data/queue'
+# on the HOST — the real proof it's on the array, not the ephemeral layer
+ls -la /mnt/user/nvme_array/appdata/Fluxer/unraid/data/
+```
+
+If `fluxer.db` grows past ~4 KB and an `s3/` tree appears **on the host**, you're safe. If the host
+dir is empty but the app works, you're writing to the ephemeral layer — stop and fix before the next
+rebuild.
+
+## Database backend — SQLite vs Cassandra (no Postgres)
+
+Fluxer's data layer supports exactly two backends (`database.backend` enum in
+`packages/config/src/ConfigSchema.json`): **`sqlite`** and **`cassandra`**. There is **no Postgres
+support anywhere in the codebase** — it's not a config toggle, it's an unwritten storage adapter, so
+"swap in Postgres for performance" isn't a compose change, it's a fork.
+
+For a single self-hosted box, **SQLite is the right and faster choice** — an in-process embedded DB
+with no network hop beats a containerized SQL server for one node. Cassandra is upstream's
+*horizontal-scale* path (multi-node, JVM, heavy) and is overkill here. See the "Not applied" table.
 
 ## Unraid deployment (real domain + reverse proxy)
 
