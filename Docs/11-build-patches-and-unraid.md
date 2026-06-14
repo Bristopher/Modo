@@ -56,6 +56,27 @@ future me (or an upstream merge) knows they were on purpose, not accidental.
 | B2 | **Voice/LiveKit is always-on** (removed the `profiles: ['voice']` gate). | `unraid/compose.yaml` | This deploy always wants voice; the profile gate meant a plain `compose up` / Compose Manager "Up" skipped LiveKit and forced a per-launch flag. Removing it makes LiveKit a normal service. |
 | B3 | **Large uploads aren't aborted at 30s.** The REST client's `defaultTimeoutMs = 30000` was applied to *every* request, including the multipart message-with-attachment POST, so any upload that took >30s to stream was killed client-side (`xhr.timeout`). Patched `performXHRRequest` to detect upload bodies (`FormData`/`Blob`/`ArrayBuffer`) and give them a bounded 1h ceiling instead of the 30s default; normal JSON calls keep 30s. | `fluxer_app/src/lib/HttpClient.tsx` (~line 753) | Needed for attachments above ~a few hundred MB. Pairs with the admin limit-config bump (see [14](./14-raising-limits-via-admin-api.md)) and the NPM body/timeout config below. **Requires a desktop/web rebuild** — it's bundled frontend. 1h (not unbounded) so a half-open dead connection still has an upper limit; the server discards partial uploads anyway (buffer-then-store, no orphans). |
 
+### Desktop installer behavior (`scripts/Build-FluxerDesktop.ps1`)
+
+The Windows desktop build script wraps electron-builder and injects a generated NSIS include
+(`.eb-installer.generated.nsh`, created/cleaned per-run so the tracked `electron-builder.config.cjs`
+stays clean). Two installer behaviors are baked in via that include:
+
+| Feature | How | Why |
+| --- | --- | --- |
+| **Auto-close running app on install** | `customInit` + `customInstall` macros run `taskkill /F /T /IM "<productName>.exe"`. Electron names the main process *and* all GPU/renderer helpers `<productName>.exe` on Windows, so one image-name kill clears every file lock. `customInit` fires in `.onInit` (before electron-builder's app-running check), `customInstall` repeats it right before file copy. | electron-builder's assisted installer otherwise stops with *"\<app\> cannot be closed. Please close it manually and click Retry"* when the app is open (commonly minimized to the tray). The kill makes reinstalls one-click. **Baked into every build.** |
+| **Seed the server URL (`-DefaultServer <url>`)** | `customInstall` writes `{"app_url":"<url>"}` to `%APPDATA%\<storageDir>\settings.json` **on first install only** (`IfFileExists` guard preserves a user who later switched servers). `<storageDir>` is `fluxercanary` for canary/branded builds, `fluxer` for stable. | The fresh install opens already pointed at the self-hosted instance — no need to run `scripts/Switch-FluxerInstance.ps1`. Only emitted when `-DefaultServer` is passed. |
+
+Build invocation for this deployment (brand implies `-Canary`; brand name must match the installed
+app so the auto-kill targets the right exe):
+
+```powershell
+.\scripts\Build-FluxerDesktop.ps1 -Brand "Fluxer Bigweld" -DefaultServer "https://fluxer.bigweld.duckdns.org"
+```
+
+> The auto-kill lives in the *installer*, so it only takes effect from the **next** build onward —
+> the currently-installed installer can't kill for an install that predates the feature.
+
 ### Design note: the domain is baked in at build time
 
 `rspack` reads `FLUXER_CONFIG` and **hardcodes** the api/gateway/media/static URLs into the bundle.
