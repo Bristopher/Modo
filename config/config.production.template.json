@@ -8,7 +8,7 @@
 	},
 	"database": {
 		"backend": "sqlite",
-		"sqlite_path": "./data/fluxer.db"
+		"sqlite_path": "/usr/src/app/data/fluxer.db"
 	},
 	"internal": {
 		"kv": "redis://valkey:6379/0",
