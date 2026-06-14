@@ -213,19 +213,29 @@ base.productName = $brandJson;          // distinct install dir / exe / Start Me
 base.appId = '$appIdOverride';          // distinct Windows app identity
 "@
     }
-    # Optionally seed the server URL at install time via a custom NSIS include.
-    # This writes %APPDATA%\<storageDir>\settings.json on first install ONLY (it
-    # won't clobber a user who later switched servers), so the app connects to
-    # your instance out of the box -- no need to run Switch-FluxerInstance.ps1.
-    # The .nsh is generated/cleaned alongside the temp config, so the tracked
-    # source stays untouched and upstream pulls stay clean.
-    $nshLines = ''
+    # Generate a custom NSIS include that (a) ALWAYS force-closes a running
+    # instance so the installer never stops to ask the user to close it manually,
+    # and (b) optionally seeds the server URL at install time.
+    #
+    # Electron names every process (main + GPU/renderer helpers) "<productName>.exe"
+    # on Windows, so a single taskkill /F /T by image name clears all file locks.
+    # We do it in customInit (runs in .onInit, before electron-builder's
+    # "app is running" check) AND at the top of customInstall (right before files
+    # are copied), which covers both the assisted-installer prompt and the copy lock.
+    #
+    # The seed writes %APPDATA%\<storageDir>\settings.json on first install ONLY (it
+    # won't clobber a user who later switched servers), so the app connects to your
+    # instance out of the box -- no need to run Switch-FluxerInstance.ps1.
+    #
+    # The .nsh is generated/cleaned alongside the temp config, so the tracked source
+    # stays untouched and upstream pulls stay clean.
     $genNsh   = Join-Path $DesktopDir '.eb-installer.generated.nsh'
+    $exeName  = "$product.exe"   # productName drives the Electron exe + helper names
+
+    $seedBlock = ''
     if ($DefaultServer) {
         $settingsBody = "{`"app_url`": `"$DefaultServer`"}"
-        # NSIS: only seed if the file isn't already there (preserve user choice).
-        $nshBody = @"
-!macro customInstall
+        $seedBlock = @"
   IfFileExists "`$APPDATA\$storageDir\settings.json" fluxer_seed_done fluxer_seed_write
   fluxer_seed_write:
     CreateDirectory "`$APPDATA\$storageDir"
@@ -233,13 +243,27 @@ base.appId = '$appIdOverride';          // distinct Windows app identity
     FileWrite `$0 '$settingsBody'
     FileClose `$0
   fluxer_seed_done:
-!macroend
 "@
-        Set-Content -Path $genNsh -Value $nshBody -Encoding ASCII
-        $nshJson  = '.eb-installer.generated.nsh' | ConvertTo-Json  # path relative to config
-        $nshLines = "base.nsis = Object.assign({}, base.nsis, { include: $nshJson });"
         Write-Host "  default server: $DefaultServer (seeded into installer)" -ForegroundColor Green
     }
+
+    $nshBody = @"
+!macro customInit
+  nsExec::Exec 'taskkill /F /T /IM "$exeName"'
+  Pop `$1
+!macroend
+
+!macro customInstall
+  nsExec::Exec 'taskkill /F /T /IM "$exeName"'
+  Pop `$1
+  Sleep 500
+$seedBlock
+!macroend
+"@
+    Set-Content -Path $genNsh -Value $nshBody -Encoding ASCII
+    $nshJson  = '.eb-installer.generated.nsh' | ConvertTo-Json  # path relative to config
+    $nshLines = "base.nsis = Object.assign({}, base.nsis, { include: $nshJson });"
+    Write-Host "  auto-close on install: taskkill `"$exeName`" (baked into installer)" -ForegroundColor Green
 
     $verJson = $version | ConvertTo-Json
     $genBody = @"
