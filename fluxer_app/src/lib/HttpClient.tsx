@@ -752,11 +752,14 @@ export class HttpClient {
 
 			// File uploads (multipart/binary bodies) are bandwidth-bound, not latency-bound:
 			// a large attachment can legitimately take far longer than the default request
-			// timeout to stream. Applying the 30s default here aborts big uploads mid-flight,
-			// so skip the timeout for upload bodies and let progress/abort handle stalls.
+			// timeout to stream. The 30s default aborts big uploads mid-flight. Rather than
+			// removing the deadline entirely (which would let a half-open dead connection sit
+			// open), give uploads a generous bounded ceiling so there is still an upper limit.
 			const isUploadBody = body instanceof FormData || body instanceof Blob || body instanceof ArrayBuffer;
-			if (config.timeout && config.timeout > 0 && !isUploadBody) {
-				xhr.timeout = config.timeout;
+			const UPLOAD_TIMEOUT_MS = 60 * 60 * 1000; // 1h, matches the reverse-proxy body timeout
+			const effectiveTimeout = isUploadBody ? UPLOAD_TIMEOUT_MS : config.timeout;
+			if (effectiveTimeout && effectiveTimeout > 0) {
+				xhr.timeout = effectiveTimeout;
 			}
 
 			for (const [name, value] of Object.entries(headers)) {
