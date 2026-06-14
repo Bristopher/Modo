@@ -24,6 +24,12 @@
 			"port": 8080,
 			"host": "0.0.0.0"
 		},
+		"s3": {
+			"data_dir": "/usr/src/app/data/s3"
+		},
+		"queue": {
+			"data_dir": "/usr/src/app/data/queue"
+		},
 		"media_proxy": {
 			"secret_key": "GENERATE_A_64_CHAR_HEX_SECRET"
 		},

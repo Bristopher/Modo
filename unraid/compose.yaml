@@ -85,7 +85,11 @@ services:
         condition: service_healthy
     volumes:
       - ${FLUXER_APPDATA:-.}/config:/usr/src/app/config:ro
-      - fluxer_data:/usr/src/app/data
+      # SQLite DB lives here. Host bind-mount (NOT a named volume) so the DB is a real
+      # file on the array at ${FLUXER_APPDATA}/data/fluxer.db — visible on disk, covered
+      # by CA Appdata Backup, and impossible to lose to `docker compose down -v`.
+      # config.json must set "sqlite_path": "/usr/src/app/data/fluxer.db" (absolute).
+      - ${FLUXER_APPDATA:-.}/data:/usr/src/app/data
     healthcheck:
       test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1:8080/_health || exit 1']
       interval: 15s
@@ -188,7 +192,8 @@ services:
 volumes:
   valkey_data:
   nats_data:
-  fluxer_data:
+  # fluxer_data removed — the SQLite DB is now a host bind-mount (${FLUXER_APPDATA}/data),
+  # not a named volume, so it survives `down -v` and shows up in Appdata Backup.
   caddy_data:
   caddy_config:
   mailpit_data:
