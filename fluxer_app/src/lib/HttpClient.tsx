@@ -750,7 +750,12 @@ export class HttpClient {
 				xhr.responseType = 'blob';
 			}
 
-			if (config.timeout && config.timeout > 0) {
+			// File uploads (multipart/binary bodies) are bandwidth-bound, not latency-bound:
+			// a large attachment can legitimately take far longer than the default request
+			// timeout to stream. Applying the 30s default here aborts big uploads mid-flight,
+			// so skip the timeout for upload bodies and let progress/abort handle stalls.
+			const isUploadBody = body instanceof FormData || body instanceof Blob || body instanceof ArrayBuffer;
+			if (config.timeout && config.timeout > 0 && !isUploadBody) {
 				xhr.timeout = config.timeout;
 			}
 

@@ -121,6 +121,32 @@ docker logs Nginx-Proxy-Manager-Official --since 5m 2>&1 | grep -iE "413|client_
 - Request never reaches **fluxer_server** → blocked upstream (NPM or Caddy).
 - Request arrives at **fluxer_server** then errors → app-side (limit not applied, or S3/storage).
 
+## Client-side 30-second upload timeout (desktop app patch)
+
+After the limit config and NPM timeouts were correct, an 851MB upload **still** died at exactly
+~30.18s. Server logs (Caddy) showed the request streaming fine (`bytes_read` ~620–690MB of 851MB)
+then severed with `status: 0` — and raising NPM timeouts to 3600s changed nothing. The cut was
+**client-side**.
+
+Cause: `fluxer_app/src/lib/HttpClient.tsx` has `private defaultTimeoutMs = 30000`. Every REST
+request, including the multipart message-with-attachment POST, gets `xhr.timeout = 30000`. A large
+upload can't finish the transfer in 30s, so the **browser/Electron client aborts itself**. No
+server-side change can fix this.
+
+Fix (local patch — requires a desktop rebuild): in `performXHRRequest`, skip the timeout when the
+body is an upload (FormData/Blob/ArrayBuffer), keeping the 30s default for normal JSON calls:
+
+```js
+const isUploadBody = body instanceof FormData || body instanceof Blob || body instanceof ArrayBuffer;
+if (config.timeout && config.timeout > 0 && !isUploadBody) {
+    xhr.timeout = config.timeout;
+}
+```
+
+This is a modification to **tracked source** — it will need re-applying after upstream pulls
+(see `docs/11-build-patches-and-unraid.md`). After patching, rebuild the desktop client for the
+change to take effect.
+
 ## Caveat
 
 Single multi-GB browser uploads have **no resume** — a connection blip restarts from zero.
