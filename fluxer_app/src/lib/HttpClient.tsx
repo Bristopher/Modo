@@ -750,9 +750,9 @@ export class HttpClient {
 				xhr.responseType = 'blob';
 			}
 
-			// File uploads (multipart/binary bodies) are bandwidth-bound, not latency-bound:
-			// a large attachment can legitimately take far longer than the default request
-			// timeout to stream. The 30s default aborts big uploads mid-flight. Rather than
+			// Self-host patch: file uploads (multipart/binary bodies) are bandwidth-bound, not
+			// latency-bound: a large attachment can legitimately take far longer than the default
+			// request timeout to stream. The 30s default aborts big uploads mid-flight. Rather than
 			// removing the deadline entirely (which would let a half-open dead connection sit
 			// open), give uploads a generous bounded ceiling so there is still an upper limit.
 			const isUploadBody = body instanceof FormData || body instanceof Blob || body instanceof ArrayBuffer;

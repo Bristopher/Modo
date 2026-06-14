@@ -147,6 +147,29 @@ This is a modification to **tracked source** — it will need re-applying after 
 (see `docs/11-build-patches-and-unraid.md`). After patching, rebuild the desktop client for the
 change to take effect.
 
+## Do failed uploads accumulate? (buffer-then-store — no orphans)
+
+No. The server receives and parses the **entire** multipart body before it writes anything to
+storage. See `packages/api/src/channel/services/message/MessageRequestParser.tsx:61`:
+
+```js
+body = await ctx.req.parseBody();   // buffers the whole multipart body first
+```
+
+The attachment is only persisted to S3 *after* `parseBody()` succeeds. So an aborted upload (PC
+dies, timeout, cancel) throws `FAILED_TO_PARSE_MULTIPART_FORM_DATA` → **no S3 object and no
+message are created**. The partial bytes were only ever a transient in-flight buffer, freed when
+the request fails. There is no streaming-straight-to-S3, so there is no orphaned-object cleanup
+problem.
+
+What a dead/abandoned upload actually costs (both transient, self-clearing):
+
+- **A held connection** — bounded by NPM `client_body_timeout` (3600s), then nginx kills it.
+- **Server RAM during the in-flight request** — `parseBody()` buffers the *entire* file in memory,
+  so a 5GB upload ≈ 5GB RAM on `fluxer_server` for the duration, freed on completion/abort. This
+  (not storage) is the real capacity concern as you push toward multi-GB uploads — watch
+  `fluxer_server` memory headroom, and beware several concurrent large uploads.
+
 ## Caveat
 
 Single multi-GB browser uploads have **no resume** — a connection blip restarts from zero.

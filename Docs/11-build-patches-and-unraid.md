@@ -54,6 +54,7 @@ future me (or an upstream merge) knows they were on purpose, not accidental.
 | --- | --- | --- | --- |
 | B1 | **NSFW image scanning is OFF by default** here. Added a `FLUXER_DISABLE_NSFW` env var (`true`/`1`/`yes`) that makes `NSFWDetectionService` skip loading the ONNX model and report all media as non-NSFW. | `packages/media_proxy/src/lib/NSFWDetectionService.tsx`; wired in `unraid/compose.yaml` + staged `.env` (`FLUXER_DISABLE_NSFW=true`) | The image is built slim (`INCLUDE_NSFW_ML=false`), so `/opt/data/model.onnx` doesn't exist — but `initialize()` upstream reads it unconditionally and crashes the server on boot. The env var lets us run model-free. Set to `false` (and build with `INCLUDE_NSFW_ML=true`) to re-enable scanning. |
 | B2 | **Voice/LiveKit is always-on** (removed the `profiles: ['voice']` gate). | `unraid/compose.yaml` | This deploy always wants voice; the profile gate meant a plain `compose up` / Compose Manager "Up" skipped LiveKit and forced a per-launch flag. Removing it makes LiveKit a normal service. |
+| B3 | **Large uploads aren't aborted at 30s.** The REST client's `defaultTimeoutMs = 30000` was applied to *every* request, including the multipart message-with-attachment POST, so any upload that took >30s to stream was killed client-side (`xhr.timeout`). Patched `performXHRRequest` to detect upload bodies (`FormData`/`Blob`/`ArrayBuffer`) and give them a bounded 1h ceiling instead of the 30s default; normal JSON calls keep 30s. | `fluxer_app/src/lib/HttpClient.tsx` (~line 753) | Needed for attachments above ~a few hundred MB. Pairs with the admin limit-config bump (see [14](./14-raising-limits-via-admin-api.md)) and the NPM body/timeout config below. **Requires a desktop/web rebuild** — it's bundled frontend. 1h (not unbounded) so a half-open dead connection still has an upper limit; the server discards partial uploads anyway (buffer-then-store, no orphans). |
 
 ### Design note: the domain is baked in at build time
 
@@ -168,7 +169,18 @@ In Nginx Proxy Manager (which must also be attached to **`bignet`**): new proxy 
 - Domain: `fluxer.bigweld.duckdns.org`
 - Scheme: `http`, Forward Hostname: **`caddy`**, Forward Port: **`8080`** (container name + internal port)
 - **Websockets support: ON**
-- Advanced: `client_max_body_size 100M;` (for uploads/attachments)
+- Advanced (Custom Nginx Configuration — for large uploads/attachments):
+  ```nginx
+  client_max_body_size 0;        # no proxy-level size cap (Fluxer enforces its own limit)
+  proxy_request_buffering off;    # stream the upload instead of buffering the whole file first
+  proxy_read_timeout 3600s;
+  proxy_send_timeout 3600s;
+  client_body_timeout 3600s;      # the 30s-ish default severs large uploads mid-stream
+  send_timeout 3600s;
+  ```
+  These must go in the **proxy host's** Advanced tab, not global Settings. See
+  [14](./14-raising-limits-via-admin-api.md) for the full upload-limit story (NPM is only one of
+  three layers — also the Fluxer limit-config and the client-side timeout patch B3).
 - SSL: request a Let's Encrypt cert (DuckDNS DNS challenge easiest), Force SSL on.
 
 Port-forward **80/443** on your router → the NPM host (for the cert + public HTTPS). **Do not** port
