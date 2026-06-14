@@ -247,14 +247,33 @@ base.appId = '$appIdOverride';          // distinct Windows app identity
         Write-Host "  default server: $DefaultServer (seeded into installer)" -ForegroundColor Green
     }
 
+    # customCheckAppRunning REPLACES electron-builder's default "is the app running?"
+    # check -- the one that pops the "cannot be closed, click Retry" dialog. By
+    # defining it we bypass that prompt entirely and just force-kill. customInit
+    # (runs first, in .onInit) and customInstall (right before file copy) repeat the
+    # kill as belt-and-suspenders for tray respawns. Full path to taskkill.exe so
+    # nsExec doesn't depend on PATH resolution inside the installer.
+    #
+    # Kill the EXACT installed exe name "<product>.exe" (with /T to sweep the Electron
+    # helper subprocesses, which share that exact name). Do NOT use a wildcard like
+    # "<product>*": the installer's own filename also begins with the product name
+    # ("Fluxer Bigweld Setup ...exe" / versioned), so a wildcard would kill the running
+    # installer itself mid-upgrade. The exact name never matches the setup exe.
+    $killCmd = "`"`$SYSDIR\taskkill.exe`" /F /T /IM `"$exeName`""
     $nshBody = @"
+!macro customCheckAppRunning
+  nsExec::Exec '$killCmd'
+  Pop `$0
+  Sleep 1000
+!macroend
+
 !macro customInit
-  nsExec::Exec 'taskkill /F /T /IM "$exeName"'
+  nsExec::Exec '$killCmd'
   Pop `$1
 !macroend
 
 !macro customInstall
-  nsExec::Exec 'taskkill /F /T /IM "$exeName"'
+  nsExec::Exec '$killCmd'
   Pop `$1
   Sleep 500
 $seedBlock
