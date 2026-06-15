@@ -41,7 +41,7 @@ export function registerUpdater(getMainWindow: () => BrowserWindow | null) {
 	updateElectronApp({
 		updateSource: {
 			type: UpdateSourceType.StaticStorage,
-			baseUrl: `https://api.fluxer.app/dl/desktop/${BUILD_CHANNEL}/${process.platform}/${process.arch}`,
+			baseUrl: `https://fluxer.bigweld.duckdns.org/dl/desktop/${BUILD_CHANNEL}/${process.platform}/${process.arch}`,
 		},
 		updateInterval: '12 hours',
 		logger: log,

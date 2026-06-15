@@ -33,8 +33,8 @@ interface ChannelStorageDirectoryMap {
 }
 
 const channelStorageDirectoryMap: ChannelStorageDirectoryMap = {
-	stable: 'fluxer',
-	canary: 'fluxercanary',
+	stable: 'fluxerbigweld',
+	canary: 'fluxerbigweld',
 };
 
 function resolveUserDataPaths(channel: BuildChannel): {directoryName: string; base: string} {
