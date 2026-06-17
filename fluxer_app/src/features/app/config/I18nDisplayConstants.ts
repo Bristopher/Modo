@@ -57,8 +57,8 @@ export const LINK_PREVIEW_EXAMPLE_URL = 'https://fluxer.app';
 export const EXAMPLE_MESSAGE_LINK = `${LINK_PREVIEW_EXAMPLE_URL}/channels/...`;
 export const EXAMPLE_GIF_URLS = `${EXAMPLE_URL}/gif1.gif\n${EXAMPLE_URL}/gif2.gif`;
 export const THE_OTHER_PLATFORM_TEMPLATE_EXAMPLE_URL = `https://${THE_OTHER_PLATFORM.toLowerCase()}.new/abcd1234`;
-export const DESKTOP_DOWNLOAD_URL =
-	Config.PUBLIC_RELEASE_CHANNEL === 'canary' ? 'https://canary.fluxer.app/download' : 'https://fluxer.app/download';
+// Self-host patch: point downloads at our Modo desktop releases.
+export const DESKTOP_DOWNLOAD_URL = 'https://github.com/Bristopher/Modo/releases/latest';
 export const FLUXER_DOCS_DOMAIN = 'fluxer.dev';
 export const FLUXER_DOCS_URL = `https://${FLUXER_DOCS_DOMAIN}`;
 export const FLUXER_BLUESKY_HANDLE = '@fluxer.app';

@@ -191,20 +191,21 @@ function buildTemplate(): Array<MenuItemConstructorOptions> {
 			{
 				label: t('desktop.appMenu.website'),
 				click: async () => {
-					await openExternalDeduped('https://fluxer.app');
+					// Self-host patch: Modo instance + repo links.
+					await openExternalDeduped('https://modo.bigweld.duckdns.org');
 				},
 			},
 			{
 				label: t('desktop.appMenu.github'),
 				click: async () => {
-					await openExternalDeduped('https://github.com/fluxerapp/fluxer');
+					await openExternalDeduped('https://github.com/Bristopher/Modo');
 				},
 			},
 			{type: 'separator'},
 			{
 				label: t('desktop.appMenu.reportIssue'),
 				click: async () => {
-					await openExternalDeduped('https://github.com/fluxerapp/fluxer/issues');
+					await openExternalDeduped('https://github.com/Bristopher/Modo/issues');
 				},
 			},
 			{type: 'separator'},
