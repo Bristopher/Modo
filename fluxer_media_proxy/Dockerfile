@@ -1,89 +1,80 @@
-ARG BUILD_SHA
-ARG BUILD_NUMBER
-ARG BUILD_TIMESTAMP
-ARG RELEASE_CHANNEL=nightly
+# syntax=docker/dockerfile:1.7
 
-FROM node:24-bookworm-slim AS base
+ARG DEBIAN_BASE=debian:trixie-slim
+ARG RUST_IMAGE=rust:1-trixie
 
-WORKDIR /usr/src/app
+FROM ${RUST_IMAGE} AS builder
+WORKDIR /build
 
-RUN corepack enable && corepack prepare pnpm@10.26.0 --activate
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates pkg-config build-essential \
+        libcurl4-openssl-dev libvips-dev \
+        libavformat-dev libavcodec-dev libavfilter-dev libavutil-dev libswscale-dev libswresample-dev \
+        libheif-dev libwebp-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-FROM base AS generator
+COPY . .
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY patches/ ./patches/
-COPY packages/config/ ./packages/config/
-COPY packages/constants/ ./packages/constants/
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo test -p fluxer-media-proxy \
+    && cargo build --release -p fluxer-media-proxy \
+    && cp target/release/fluxer-media-proxy /usr/local/bin/fluxer-media-proxy
 
-RUN pnpm install --frozen-lockfile --filter @fluxer/config...
-RUN pnpm --filter @fluxer/config generate
+FROM ${DEBIAN_BASE} AS runtime
+ARG BUILD_VERSION=""
 
-FROM base AS deps
+LABEL org.opencontainers.image.title="fluxer-media-proxy"
+LABEL org.opencontainers.image.description="High-throughput media transcoding proxy: libvips + libavformat + libcurl"
+LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
+LABEL org.opencontainers.image.source="https://github.com/fluxer/fluxer/tree/main/fluxer_media_proxy"
+LABEL org.opencontainers.image.documentation="https://github.com/fluxer/fluxer/blob/main/fluxer_media_proxy/README.md"
+LABEL org.opencontainers.image.version="${BUILD_VERSION}"
+LABEL app.fluxer.build-version="${BUILD_VERSION}"
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-	build-essential \
-	gcc \
-	g++ \
-	make \
-	python3 \
-	pkg-config \
-	libssl-dev \
-	libvips-dev && \
-	rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates tini \
+        libcurl4t64 libvips42t64 \
+        libavformat61 libavcodec61 libavfilter10 libavutil59 libswscale8 libswresample5 \
+        libheif1 libheif-plugin-libde265 libheif-plugin-dav1d \
+        libwebp7 libwebpmux3 \
+        libjemalloc2 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY patches/ ./patches/
-COPY packages/ ./packages/
-COPY fluxer_media_proxy/package.json ./fluxer_media_proxy/
+RUN groupadd --system --gid 10001 fluxer \
+    && useradd --system --uid 10001 --gid 10001 --home /var/lib/fluxer --create-home fluxer
 
-RUN pnpm install --frozen-lockfile --prod
+COPY --from=builder /usr/local/bin/fluxer-media-proxy /usr/local/bin/fluxer-media-proxy
 
-FROM node:24-bookworm-slim
+RUN install -d -o fluxer -g fluxer /var/lib/fluxer/media_proxy_storage
 
-ARG BUILD_SHA
-ARG BUILD_NUMBER
-ARG BUILD_TIMESTAMP
-ARG RELEASE_CHANNEL
+ENV LD_PRELOAD=libjemalloc.so.2
+ENV MALLOC_CONF="background_thread:true,metadata_thp:auto,dirty_decay_ms:5000,muzzy_decay_ms:5000"
 
-WORKDIR /usr/src/app/fluxer_media_proxy
+ENV VIPS_CONCURRENCY=1
+ENV VIPS_DISC_THRESHOLD=1g
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-	curl \
-	ffmpeg \
-	libvips \
-	libgomp1 \
-	libatomic1 && \
-	rm -rf /var/lib/apt/lists/*
+ENV G_MESSAGES_DEBUG=
 
-RUN corepack enable && corepack prepare pnpm@10.26.0 --activate
+ENV FLUXER_MEDIA_PROXY_HOST=0.0.0.0
+ENV FLUXER_MEDIA_PROXY_PORT=8080
+ENV BUILD_VERSION="${BUILD_VERSION}"
 
-COPY --from=deps /usr/src/app/node_modules /usr/src/app/node_modules
-COPY --from=deps /usr/src/app/fluxer_media_proxy/node_modules ./node_modules
-COPY --from=deps /usr/src/app/packages /usr/src/app/packages
-COPY --from=generator /usr/src/app/packages/config/src/ConfigSchema.json /usr/src/app/packages/config/src/ConfigSchema.json
-COPY --from=generator /usr/src/app/packages/config/src/MasterZodSchema.generated.tsx /usr/src/app/packages/config/src/MasterZodSchema.generated.tsx
-COPY tsconfigs /usr/src/app/tsconfigs
-COPY fluxer_media_proxy/package.json ./
-COPY fluxer_media_proxy/tsconfig.json ./
-COPY fluxer_media_proxy/src ./src
-COPY fluxer_media_proxy/data ./data
-
-RUN mkdir -p /opt/data /usr/src/app/.cache/corepack && \
-	cp data/model.onnx /opt/data/model.onnx && \
-	chown -R nobody:nogroup /usr/src/app
-
-ENV HOME=/usr/src/app
-ENV COREPACK_HOME=/usr/src/app/.cache/corepack
-ENV NODE_ENV=production
-ENV PORT=8080
-ENV BUILD_SHA=${BUILD_SHA}
-ENV BUILD_NUMBER=${BUILD_NUMBER}
-ENV BUILD_TIMESTAMP=${BUILD_TIMESTAMP}
-ENV RELEASE_CHANNEL=${RELEASE_CHANNEL}
-
-USER nobody
+USER 10001:10001
+WORKDIR /var/lib/fluxer
 
 EXPOSE 8080
 
-CMD ["pnpm", "start"]
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["sh", "-c", "exec 3<>/dev/tcp/127.0.0.1/${FLUXER_MEDIA_PROXY_PORT:-8080} && printf 'GET /_health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '200' <&3"]
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/usr/local/bin/fluxer-media-proxy"]

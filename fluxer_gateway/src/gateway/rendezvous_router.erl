@@ -1,42 +1,55 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(rendezvous_router).
+-typing([eqwalizer]).
 
--export([select/2, group_keys/2]).
+-export([select/2, select_node/2, group_keys/2]).
 
 -define(HASH_LIMIT, 16#FFFFFFFF).
+
+-spec select_node(term(), [node()]) -> node() | undefined.
+select_node(_Key, []) ->
+    undefined;
+select_node(_Key, [Node]) ->
+    Node;
+select_node(Key, Nodes) when is_list(Nodes) ->
+    {Best, _Weight} =
+        lists:foldl(
+            fun(Node, Acc) -> pick_better_node(Key, Node, Acc) end,
+            {undefined, -1},
+            Nodes
+        ),
+    Best.
+
+-spec pick_better_node(term(), node(), {node() | undefined, integer()}) ->
+    {node() | undefined, integer()}.
+pick_better_node(Key, Node, {BestNode, BestWeight}) ->
+    Weight = node_weight(Key, Node),
+    IsBetter =
+        (Weight > BestWeight) orelse
+            (Weight =:= BestWeight andalso is_lower_node(Node, BestNode)),
+    case IsBetter of
+        true -> {Node, Weight};
+        false -> {BestNode, BestWeight}
+    end.
+
+-spec is_lower_node(node(), node() | undefined) -> boolean().
+is_lower_node(_Node, undefined) ->
+    true;
+is_lower_node(Node, BestNode) ->
+    Node < BestNode.
+
+-spec node_weight(term(), node()) -> non_neg_integer().
+node_weight(Key, Node) ->
+    erlang:phash2({Key, Node}, ?HASH_LIMIT).
 
 -spec select(term(), pos_integer()) -> non_neg_integer().
 select(Key, ShardCount) when ShardCount > 0 ->
     Indices = lists:seq(0, ShardCount - 1),
     {Index, _Weight} =
         lists:foldl(
-            fun(CurrentIndex, {BestIndex, BestWeight}) ->
-                Weight = weight(Key, CurrentIndex),
-                case
-                    (Weight > BestWeight) orelse
-                        (Weight =:= BestWeight andalso CurrentIndex < BestIndex)
-                of
-                    true ->
-                        {CurrentIndex, Weight};
-                    false ->
-                        {BestIndex, BestWeight}
-                end
+            fun(CurrentIndex, Best) ->
+                pick_better(Key, CurrentIndex, Best)
             end,
             {0, -1},
             Indices
@@ -52,7 +65,7 @@ group_keys(Keys, ShardCount) when is_list(Keys), ShardCount > 0 ->
             fun(Key, Acc) ->
                 Index = select(Key, ShardCount),
                 Existing = maps:get(Index, Acc, []),
-                maps:put(Index, [Key | Existing], Acc)
+                Acc#{Index => [Key | Existing]}
             end,
             #{},
             Keys
@@ -64,6 +77,18 @@ group_keys(Keys, ShardCount) when is_list(Keys), ShardCount > 0 ->
     Sorted;
 group_keys(_Keys, _ShardCount) ->
     [].
+
+-spec pick_better(term(), non_neg_integer(), {non_neg_integer(), integer()}) ->
+    {non_neg_integer(), integer()}.
+pick_better(Key, CurrentIndex, {BestIndex, BestWeight}) ->
+    Weight = weight(Key, CurrentIndex),
+    IsBetter =
+        (Weight > BestWeight) orelse
+            (Weight =:= BestWeight andalso CurrentIndex < BestIndex),
+    case IsBetter of
+        true -> {CurrentIndex, Weight};
+        false -> {BestIndex, BestWeight}
+    end.
 
 -spec weight(term(), non_neg_integer()) -> non_neg_integer().
 weight(Key, Index) ->
@@ -78,14 +103,12 @@ select_single_shard_test() ->
     ?assertEqual(0, select(12345, 1)).
 
 select_valid_index_test_() ->
-    [
-        ?_test(begin
-            Index = select(test_key, N),
-            ?assert(Index >= 0),
-            ?assert(Index < N)
-        end)
-     || N <- [2, 5, 10, 100]
-    ].
+    [?_test(assert_valid_index(N)) || N <- [2, 5, 10, 100]].
+
+assert_valid_index(N) ->
+    Index = select(test_key, N),
+    ?assert(Index >= 0),
+    ?assert(Index < N).
 
 select_stability_test_() ->
     [
@@ -97,17 +120,23 @@ select_stability_test_() ->
 select_distribution_test() ->
     Keys = lists:seq(1, 1000),
     ShardCount = 10,
-    Distribution = lists:foldl(
-        fun(Key, Acc) ->
-            Index = select(Key, ShardCount),
-            maps:update_with(Index, fun(V) -> V + 1 end, 1, Acc)
-        end,
-        #{},
-        Keys
-    ),
+    Distribution = count_distribution(Keys, ShardCount),
     Counts = maps:values(Distribution),
     ?assertEqual(ShardCount, maps:size(Distribution)),
     lists:foreach(fun(Count) -> ?assert(Count > 0) end, Counts).
+
+count_distribution(Keys, ShardCount) ->
+    lists:foldl(
+        fun(Key, Acc) ->
+            count_distribution_fold(Key, ShardCount, Acc)
+        end,
+        #{},
+        Keys
+    ).
+
+count_distribution_fold(Key, ShardCount, Acc) ->
+    Index = select(Key, ShardCount),
+    maps:update_with(Index, fun(V) -> V + 1 end, 1, Acc).
 
 group_keys_empty_test() ->
     ?assertEqual([], group_keys([], 4)).
@@ -137,5 +166,43 @@ group_keys_all_keys_present_test() ->
     Groups = group_keys(Keys, 3),
     AllGroupedKeys = lists:flatten([K || {_, K} <- Groups]),
     ?assertEqual(lists:sort(Keys), lists:sort(AllGroupedKeys)).
+
+select_node_empty_returns_undefined_test() ->
+    ?assertEqual(undefined, select_node(<<"k">>, [])).
+
+select_node_single_returns_only_node_test() ->
+    ?assertEqual('n@a', select_node(<<"k">>, ['n@a'])).
+
+select_node_deterministic_test() ->
+    Nodes = ['n@a', 'n@b', 'n@c'],
+    ?assertEqual(select_node(<<"guild-1">>, Nodes), select_node(<<"guild-1">>, Nodes)),
+    ?assertEqual(select_node(42, Nodes), select_node(42, Nodes)).
+
+select_node_independent_of_order_test() ->
+    Nodes1 = ['n@a', 'n@b', 'n@c'],
+    Nodes2 = ['n@c', 'n@a', 'n@b'],
+    ?assertEqual(select_node(<<"k">>, Nodes1), select_node(<<"k">>, Nodes2)).
+
+select_node_member_of_candidates_test() ->
+    Nodes = ['n@a', 'n@b', 'n@c'],
+    lists:foreach(
+        fun(I) ->
+            Owner = select_node(<<"key-", (integer_to_binary(I))/binary>>, Nodes),
+            ?assert(lists:member(Owner, Nodes))
+        end,
+        lists:seq(1, 100)
+    ).
+
+select_node_minimal_disruption_on_leave_test() ->
+    Nodes = ['n@a', 'n@b', 'n@c', 'n@d'],
+    Remaining = ['n@a', 'n@b', 'n@c'],
+    Keys = [<<"key-", (integer_to_binary(I))/binary>> || I <- lists:seq(1, 400)],
+    Moved = length([
+        K
+     || K <- Keys,
+        select_node(K, Nodes) =/= select_node(K, Remaining),
+        lists:member(select_node(K, Nodes), Remaining)
+    ]),
+    ?assertEqual(0, Moved).
 
 -endif.

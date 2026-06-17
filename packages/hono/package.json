@@ -13,9 +13,7 @@
 	"dependencies": {
 		"@fluxer/constants": "workspace:*",
 		"@fluxer/errors": "workspace:*",
-		"@fluxer/hono_types": "workspace:*",
 		"@fluxer/ip_utils": "workspace:*",
-		"@fluxer/telemetry": "workspace:*",
 		"@hono/node-server": "catalog:",
 		"hono": "catalog:"
 	},

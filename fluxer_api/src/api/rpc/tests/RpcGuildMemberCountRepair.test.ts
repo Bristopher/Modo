@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import {afterEach, beforeEach, describe, expect, test} from 'vitest';
+import {createTestAccount} from '../../auth/tests/AuthTestUtils';
+import {createGuildID} from '../../BrandedTypes';
+import {GuildRepository} from '../../guild/repositories/GuildRepository';
+import {createGuild} from '../../guild/tests/GuildTestUtils';
+import {type ApiTestHarness, createApiTestHarness} from '../../test/ApiTestHarness';
+import {HTTP_STATUS} from '../../test/TestConstants';
+import {createBuilder} from '../../test/TestRequestBuilder';
+
+interface RpcGuildCollectionResponse {
+	type: 'guild_collection';
+	data: {
+		collection: 'guild';
+		guild: {
+			id: string;
+		};
+	};
+}
+
+async function setGuildMemberCount(harness: ApiTestHarness, guildId: string, memberCount: number): Promise<void> {
+	await createBuilder(harness, '')
+		.post(`/test/guilds/${guildId}/member-count`)
+		.body({member_count: memberCount})
+		.expect(HTTP_STATUS.OK)
+		.execute();
+}
+
+describe('RpcService guild member count repair', () => {
+	let harness: ApiTestHarness;
+	beforeEach(async () => {
+		harness = await createApiTestHarness();
+	});
+	afterEach(async () => {
+		await harness?.shutdown();
+	});
+	test('repairs guild member_count from guild_members count when fetching guild data', async () => {
+		const owner = await createTestAccount(harness);
+		const guild = await createGuild(harness, owner.token, 'RPC Guild Member Count Repair');
+		const guildId = createGuildID(BigInt(guild.id));
+		const guildRepository = new GuildRepository();
+		await setGuildMemberCount(harness, guild.id, 999);
+		const staleGuild = await guildRepository.findUnique(guildId);
+		expect(staleGuild).toBeTruthy();
+		if (!staleGuild) {
+			throw new Error('Expected guild to exist before RPC member_count repair');
+		}
+		expect(staleGuild.memberCount).toBe(999);
+		const rpcResponse = await createBuilder<RpcGuildCollectionResponse>(harness, '')
+			.post('/test/rpc-session-init')
+			.body({
+				type: 'guild_collection',
+				guild_id: guild.id,
+				collection: 'guild',
+			})
+			.expect(HTTP_STATUS.OK)
+			.execute();
+		expect(rpcResponse.type).toBe('guild_collection');
+		expect(rpcResponse.data.collection).toBe('guild');
+		expect(rpcResponse.data.guild.id).toBe(guild.id);
+		const repairedGuild = await guildRepository.findUnique(guildId);
+		expect(repairedGuild).toBeTruthy();
+		if (!repairedGuild) {
+			throw new Error('Expected guild to exist after RPC member_count repair');
+		}
+		const actualMemberCount = await guildRepository.countMembers(guildId);
+		expect(actualMemberCount).toBe(1);
+		expect(repairedGuild.memberCount).toBe(actualMemberCount);
+	});
+});

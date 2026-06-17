@@ -1,191 +1,357 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(session_manager).
+-typing([eqwalizer]).
 -behaviour(gen_server).
 
 -include_lib("fluxer_gateway/include/timeout_config.hrl").
 
--define(SHARD_TABLE, session_manager_shard_table).
--define(START_TIMEOUT, 10000).
--define(LOOKUP_TIMEOUT, 5000).
+-export([
+    start_link/0,
+    start/2,
+    lookup/1,
+    lookup_or_rehydrate/3,
+    reconnect_drain/0,
+    transfer_sessions_to/1,
+    transfer_sessions_to_topology/1,
+    handoff_to_topology/1,
+    session_count/0,
+    call_shard/3
+]).
 
--export([start_link/0, start/2, lookup/1]).
+-export([
+    ensure_shard/2, restart_shard/2
+]).
+
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+
+-define(START_TIMEOUT, 135000).
+-define(LOOKUP_TIMEOUT, 5000).
 
 -type session_id() :: binary().
 -type shard() :: #{pid := pid(), ref := reference()}.
 -type state() :: #{shards := #{non_neg_integer() => shard()}, shard_count := pos_integer()}.
+-type handoff_result() :: #{
+    attempted := non_neg_integer(),
+    handed_off := non_neg_integer()
+}.
 
--spec start_link() -> {ok, pid()} | {error, term()}.
+-spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 -spec start(map(), pid()) -> term().
 start(Request, SocketPid) ->
     SessionId = maps:get(session_id, Request),
-    call_shard(SessionId, {start, Request, SocketPid}, ?START_TIMEOUT).
+    session_manager_routing:call_owner_manager(
+        SessionId, {start, Request, SocketPid}, ?START_TIMEOUT
+    ).
 
 -spec lookup(session_id()) -> {ok, pid()} | {error, not_found}.
 lookup(SessionId) ->
-    call_shard(SessionId, {lookup, SessionId}, ?LOOKUP_TIMEOUT).
+    Reply = session_manager_routing:call_owner_manager(
+        SessionId, {lookup, SessionId}, ?LOOKUP_TIMEOUT
+    ),
+    case Reply of
+        {ok, Pid} when is_pid(Pid) -> {ok, Pid};
+        _ -> {error, not_found}
+    end.
 
--spec init([]) -> {ok, state()}.
+-spec lookup_or_rehydrate(session_id(), binary(), pid()) ->
+    {ok, pid()} | {error, not_found} | {error, invalid_token}.
+lookup_or_rehydrate(SessionId, Token, SocketPid) ->
+    Reply = session_manager_routing:call_owner_manager(
+        SessionId, {lookup_or_rehydrate, SessionId, Token, SocketPid}, ?LOOKUP_TIMEOUT
+    ),
+    case Reply of
+        {ok, Pid} when is_pid(Pid) -> {ok, Pid};
+        {error, invalid_token} -> {error, invalid_token};
+        _ -> {error, not_found}
+    end.
+
+-spec reconnect_drain() -> {ok, non_neg_integer()} | {error, timeout | unavailable}.
+reconnect_drain() ->
+    safe_gen_call(reconnect_drain).
+
+-spec transfer_sessions_to(node()) -> {ok, non_neg_integer()} | {error, timeout | unavailable}.
+transfer_sessions_to(TargetNode) ->
+    safe_gen_call({transfer_to, TargetNode}).
+
+-spec transfer_sessions_to_topology([node()]) ->
+    {ok, non_neg_integer()} | {error, timeout | unavailable}.
+transfer_sessions_to_topology(TargetNodes) ->
+    safe_gen_call({transfer_to_topology, TargetNodes}).
+
+-spec handoff_to_topology([node()]) -> {ok, handoff_result()} | {error, timeout | unavailable}.
+handoff_to_topology(TargetNodes) ->
+    safe_handoff_call({handoff_to_topology, TargetNodes}).
+
+-spec session_count() -> non_neg_integer().
+session_count() ->
+    try gen_server:call(?MODULE, get_local_count, ?DEFAULT_GEN_SERVER_TIMEOUT) of
+        {ok, Count} when is_integer(Count), Count >= 0 -> Count;
+        Count when is_integer(Count), Count >= 0 -> Count;
+        _ -> 0
+    catch
+        error:_ -> 0;
+        exit:_ -> 0
+    end.
+
+-spec call_shard(session_id(), term(), pos_integer()) -> term().
+call_shard(SessionId, Request, Timeout) ->
+    session_manager_routing:call_shard(SessionId, Request, Timeout).
+
+-spec init([]) -> {ok, state(), hibernate}.
 init([]) ->
     process_flag(trap_exit, true),
-    fluxer_gateway_env:load(),
-    ensure_shard_table(),
+    erlang:process_flag(fullsweep_after, 0),
+    _ = fluxer_gateway_env:load(),
+    session_manager_shards:ensure_shard_table(),
     {ShardCount, _Source} = determine_shard_count(),
-    Shards = start_shards(ShardCount),
+    Shards = session_manager_shards:start_shards(ShardCount),
     State = #{shards => Shards, shard_count => ShardCount},
-    sync_shard_table(State),
-    {ok, State}.
+    session_manager_shards:sync_shard_table(State),
+    {ok, State, hibernate}.
 
--spec handle_call(term(), gen_server:from(), state()) -> {reply, term(), state()}.
-handle_call({proxy_call, SessionId, Request, Timeout}, _From, State) ->
-    {Reply, NewState} = forward_call(SessionId, Request, Timeout, State),
-    {reply, Reply, NewState};
-handle_call({start, Request, SocketPid}, _From, State) ->
-    SessionId = maps:get(session_id, Request),
-    {Reply, NewState} = forward_call(SessionId, {start, Request, SocketPid}, ?START_TIMEOUT, State),
-    {reply, Reply, NewState};
-handle_call({lookup, SessionId}, _From, State) ->
-    {Reply, NewState} = forward_call(SessionId, {lookup, SessionId}, ?LOOKUP_TIMEOUT, State),
-    {reply, Reply, NewState};
+-spec handle_call(term(), gen_server:from(), state()) ->
+    {reply, term(), state()} | {noreply, state()}.
+handle_call({proxy_call, SessionId, Request, Timeout}, _From, State) when
+    is_binary(SessionId), is_integer(Timeout), Timeout > 0
+->
+    handle_proxy_call(SessionId, Request, Timeout, State);
+handle_call({owner_call, SessionId, Request, Timeout}, _From, State) when
+    is_binary(SessionId), is_integer(Timeout), Timeout > 0
+->
+    handle_owner_request(SessionId, Request, Timeout, State);
+handle_call({start, Request, SocketPid} = OwnerRequest, From, State) when
+    is_map(Request), is_pid(SocketPid)
+->
+    handle_start_owner_request(Request, SocketPid, OwnerRequest, From, State);
+handle_call({lookup, SessionId} = OwnerRequest, From, State) when is_binary(SessionId) ->
+    handle_lookup_owner_request(SessionId, OwnerRequest, From, State);
+handle_call({lookup_or_rehydrate, SessionId, Token, SocketPid} = OwnerRequest, From, State) when
+    is_binary(SessionId), is_binary(Token), is_pid(SocketPid)
+->
+    handle_lookup_owner_request(SessionId, OwnerRequest, From, State);
 handle_call(get_local_count, _From, State) ->
-    {Count, NewState} = aggregate_counts(get_local_count, State),
-    {reply, {ok, Count}, NewState};
+    handle_aggregate_count(get_local_count, State);
 handle_call(get_global_count, _From, State) ->
-    {Count, NewState} = aggregate_counts(get_global_count, State),
-    {reply, {ok, Count}, NewState};
+    handle_aggregate_count(get_global_count, State);
+handle_call(reconnect_drain, _From, State) ->
+    handle_aggregate_count(reconnect_drain, State);
+handle_call({transfer_to, TargetNode}, _From, State) when is_atom(TargetNode) ->
+    handle_transfer_to(TargetNode, State);
+handle_call({transfer_to_topology, TargetNodes}, _From, State) ->
+    handle_transfer_to_topology_request(TargetNodes, State);
+handle_call({handoff_to_topology, TargetNodes}, _From, State) ->
+    handle_handoff_to_topology_request(TargetNodes, State);
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
+
+-spec handle_transfer_to_topology_request(term(), state()) ->
+    {reply, {ok, non_neg_integer()} | {error, unavailable}, state()}.
+handle_transfer_to_topology_request(TargetNodes, State) ->
+    case atom_list(TargetNodes) of
+        {ok, Nodes} -> handle_transfer_to_topology(Nodes, State);
+        error -> {reply, {error, unavailable}, State}
+    end.
+
+-spec handle_transfer_to_topology([node()], state()) ->
+    {reply, {ok, non_neg_integer()}, state()}.
+handle_transfer_to_topology(TargetNodes, State) ->
+    {Count, NewState} = session_manager_transfer:aggregate_transfer_to_topology(
+        TargetNodes, State
+    ),
+    {reply, {ok, Count}, NewState}.
+
+-spec handle_handoff_to_topology_request(term(), state()) ->
+    {reply, {ok, handoff_result()} | {error, unavailable}, state()}.
+handle_handoff_to_topology_request(TargetNodes, State) ->
+    case atom_list(TargetNodes) of
+        {ok, Nodes} -> handle_handoff_to_topology(Nodes, State);
+        error -> {reply, {error, unavailable}, State}
+    end.
+
+-spec handle_handoff_to_topology([node()], state()) ->
+    {reply, {ok, handoff_result()}, state()}.
+handle_handoff_to_topology(TargetNodes, State) ->
+    {Result, NewState} = session_manager_transfer:aggregate_handoff_to_topology(
+        TargetNodes, State
+    ),
+    {reply, {ok, Result}, NewState}.
+
+-spec handle_proxy_call(session_id(), term(), pos_integer(), state()) ->
+    {reply, term(), state()}.
+handle_proxy_call(SessionId, Request, Timeout, State) ->
+    {Reply, NewState} = session_manager_routing:forward_call(
+        SessionId, Request, Timeout, State
+    ),
+    {reply, Reply, NewState}.
+
+-spec handle_owner_request(session_id(), term(), pos_integer(), state()) ->
+    {reply, term(), state()} | {noreply, state()}.
+handle_owner_request(SessionId, Request, Timeout, State) ->
+    case session_manager_routing:owner_scope(SessionId) of
+        local -> reply_owner_request(SessionId, Request, Timeout, State);
+        {remote, OwnerNode} -> {reply, {error, {not_owner, OwnerNode}}, State};
+        unavailable -> {reply, {error, unavailable}, State}
+    end.
+
+-spec reply_owner_request(session_id(), term(), pos_integer(), state()) ->
+    {reply, term(), state()}.
+reply_owner_request(SessionId, Request, Timeout, State) ->
+    {Reply, NewState} = session_manager_routing:execute_owner_request(
+        SessionId, Request, Timeout, State
+    ),
+    {reply, Reply, NewState}.
+
+-spec handle_start_owner_request(map(), pid(), term(), gen_server:from(), state()) ->
+    {reply, term(), state()} | {noreply, state()}.
+handle_start_owner_request(Request, _SocketPid, OwnerRequest, From, State) ->
+    case maps:get(session_id, Request, undefined) of
+        SessionId when is_binary(SessionId) ->
+            session_manager_routing:handle_owner_call(
+                SessionId, OwnerRequest, ?START_TIMEOUT, From, State
+            );
+        _ ->
+            {reply, {error, invalid_session}, State}
+    end.
+
+-spec handle_lookup_owner_request(session_id(), term(), gen_server:from(), state()) ->
+    {reply, term(), state()} | {noreply, state()}.
+handle_lookup_owner_request(SessionId, OwnerRequest, From, State) ->
+    session_manager_routing:handle_owner_call(
+        SessionId, OwnerRequest, ?LOOKUP_TIMEOUT, From, State
+    ).
+
+-spec handle_aggregate_count(term(), state()) -> {reply, {ok, non_neg_integer()}, state()}.
+handle_aggregate_count(Request, State) ->
+    {Count, NewState} = session_manager_transfer:aggregate_counts(Request, State),
+    {reply, {ok, Count}, NewState}.
+
+-spec handle_transfer_to(node(), state()) -> {reply, {ok, non_neg_integer()}, state()}.
+handle_transfer_to(TargetNode, State) ->
+    {Count, NewState} = session_manager_transfer:aggregate_transfer_to(TargetNode, State),
+    {reply, {ok, Count}, NewState}.
 
 -spec handle_cast(term(), state()) -> {noreply, state()}.
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
 -spec handle_info(term(), state()) -> {noreply, state()}.
-handle_info({'DOWN', Ref, process, Pid, _Reason}, State) ->
+handle_info({'DOWN', Ref, process, Pid, _Reason}, State) when is_reference(Ref), is_pid(Pid) ->
     Shards = maps:get(shards, State),
-    case find_shard_by_ref(Ref, Shards) of
-        {ok, Index} ->
-            {_Shard, NewState} = restart_shard(Index, State),
-            {noreply, NewState};
-        not_found ->
-            case find_shard_by_pid(Pid, Shards) of
-                {ok, Index} ->
-                    {_Shard, NewState} = restart_shard(Index, State),
-                    {noreply, NewState};
-                not_found ->
-                    {noreply, State}
-            end
+    case session_manager_transfer:find_shard_by_ref(Ref, Shards) of
+        {ok, Index} -> restart_shard_noreply(Index, State);
+        not_found -> handle_down_by_pid(Pid, State)
     end;
-handle_info({'EXIT', Pid, _Reason}, State) ->
-    Shards = maps:get(shards, State),
-    case find_shard_by_pid(Pid, Shards) of
-        {ok, Index} ->
-            {_Shard, NewState} = restart_shard(Index, State),
-            {noreply, NewState};
-        not_found ->
-            {noreply, State}
-    end;
+handle_info({'EXIT', Pid, _Reason}, State) when is_pid(Pid) ->
+    handle_down_by_pid(Pid, State);
 handle_info(_Info, State) ->
     {noreply, State}.
 
 -spec terminate(term(), state()) -> ok.
 terminate(_Reason, State) ->
     Shards = maps:get(shards, State),
-    lists:foreach(
-        fun(#{pid := Pid}) ->
-            catch gen_server:stop(Pid, shutdown, 5000)
-        end,
-        maps:values(Shards)
-    ),
-    catch ets:delete(?SHARD_TABLE),
+    lists:foreach(fun stop_shard/1, maps:values(Shards)),
+    session_manager_shards:delete_shard_table(),
     ok.
 
--spec code_change(term(), term(), term()) -> {ok, state()}.
-code_change(_OldVsn, State, _Extra) when is_map(State) ->
-    case {maps:is_key(shards, State), maps:is_key(shard_count, State)} of
-        {true, true} ->
-            sync_shard_table(State),
-            {ok, State};
+-spec stop_shard(shard()) -> ok.
+stop_shard(#{pid := Pid}) ->
+    try
+        gen_server:stop(Pid, shutdown, 5000)
+    catch
+        error:_ -> ok;
+        exit:_ -> ok
+    end.
+
+-spec code_change(term(), state(), term()) -> {ok, state()}.
+code_change(_OldVsn, State, _Extra) ->
+    erlang:process_flag(fullsweep_after, 0),
+    erlang:garbage_collect(),
+    {ok, State}.
+
+-spec ensure_shard(session_id(), state()) -> {non_neg_integer(), state()}.
+ensure_shard(SessionId, State) ->
+    session_manager_shards:ensure_shard(SessionId, State).
+
+-spec restart_shard(non_neg_integer(), state()) -> {shard() | {error, term()}, state()}.
+restart_shard(Index, State) ->
+    session_manager_shards:restart_shard(Index, State).
+
+-spec safe_gen_call(term()) -> {ok, non_neg_integer()} | {error, timeout | unavailable}.
+safe_gen_call(Request) ->
+    try gen_server:call(?MODULE, Request, ?DEFAULT_GEN_SERVER_TIMEOUT) of
+        {ok, Count} when is_integer(Count), Count >= 0 ->
+            {ok, Count};
+        Count when is_integer(Count), Count >= 0 ->
+            {ok, Count};
         _ ->
-            {ok, rebuild_state()}
-    end;
-code_change(_OldVsn, _State, _Extra) ->
-    {ok, rebuild_state()}.
-
--spec call_shard(session_id(), term(), pos_integer()) -> term().
-call_shard(SessionId, Request, Timeout) ->
-    case shard_pid_from_table(SessionId) of
-        {ok, Pid} ->
-            case catch gen_server:call(Pid, Request, Timeout) of
-                {'EXIT', {timeout, _}} ->
-                    {error, timeout};
-                {'EXIT', _} ->
-                    call_via_manager(SessionId, Request, Timeout);
-                Reply ->
-                    Reply
-            end;
-        error ->
-            call_via_manager(SessionId, Request, Timeout)
-    end.
-
--spec call_via_manager(session_id(), term(), pos_integer()) -> term().
-call_via_manager(SessionId, Request, Timeout) ->
-    case catch gen_server:call(?MODULE, {proxy_call, SessionId, Request, Timeout}, Timeout + 1000) of
-        {'EXIT', {timeout, _}} ->
+            {error, unavailable}
+    catch
+        exit:{timeout, _} ->
             {error, timeout};
-        {'EXIT', _} ->
+        exit:_ ->
             {error, unavailable};
-        Reply ->
-            Reply
+        error:_ ->
+            {error, unavailable}
     end.
 
--spec forward_call(session_id(), term(), pos_integer(), state()) -> {term(), state()}.
-forward_call(SessionId, Request, Timeout, State) ->
-    {Index, State1} = ensure_shard(SessionId, State),
-    Shards = maps:get(shards, State1),
-    #{pid := Pid} = maps:get(Index, Shards),
-    case catch gen_server:call(Pid, Request, Timeout) of
-        {'EXIT', _} ->
-            {_Shard, State2} = restart_shard(Index, State1),
-            Shards2 = maps:get(shards, State2),
-            #{pid := RetryPid} = maps:get(Index, Shards2),
-            case catch gen_server:call(RetryPid, Request, Timeout) of
-                {'EXIT', _} ->
-                    {{error, unavailable}, State2};
-                Reply ->
-                    {Reply, State2}
-            end;
-        Reply ->
-            {Reply, State1}
+-spec safe_handoff_call(term()) -> {ok, handoff_result()} | {error, timeout | unavailable}.
+safe_handoff_call(Request) ->
+    try gen_server:call(?MODULE, Request, ?DEFAULT_GEN_SERVER_TIMEOUT) of
+        {ok, #{attempted := Attempted, handed_off := HandedOff} = Result} when
+            is_integer(Attempted),
+            Attempted >= 0,
+            is_integer(HandedOff),
+            HandedOff >= 0
+        ->
+            {ok, Result};
+        #{attempted := Attempted, handed_off := HandedOff} = Result when
+            is_integer(Attempted),
+            Attempted >= 0,
+            is_integer(HandedOff),
+            HandedOff >= 0
+        ->
+            {ok, Result};
+        _ ->
+            {error, unavailable}
+    catch
+        exit:{timeout, _} ->
+            {error, timeout};
+        exit:_ ->
+            {error, unavailable};
+        error:_ ->
+            {error, unavailable}
     end.
 
--spec rebuild_state() -> state().
-rebuild_state() ->
-    ensure_shard_table(),
-    {ShardCount, _Source} = determine_shard_count(),
-    Shards = start_shards(ShardCount),
-    State = #{shards => Shards, shard_count => ShardCount},
-    sync_shard_table(State),
-    State.
+-spec restart_shard_noreply(non_neg_integer(), state()) -> {noreply, state()}.
+restart_shard_noreply(Index, State) ->
+    {_Shard, NewState} = restart_shard(Index, State),
+    {noreply, NewState}.
+
+-spec handle_down_by_pid(pid(), state()) -> {noreply, state()}.
+handle_down_by_pid(Pid, State) ->
+    Shards = maps:get(shards, State),
+    case session_manager_transfer:find_shard_by_pid(Pid, Shards) of
+        {ok, Index} -> restart_shard_noreply(Index, State);
+        not_found -> {noreply, State}
+    end.
+
+-spec atom_list(term()) -> {ok, [atom()]} | error.
+atom_list(Value) when is_list(Value) ->
+    atom_list(Value, []);
+atom_list(_) ->
+    error.
+
+-spec atom_list([term()], [atom()]) -> {ok, [atom()]} | error.
+atom_list([], Acc) ->
+    {ok, lists:reverse(Acc)};
+atom_list([Value | Rest], Acc) when is_atom(Value) ->
+    atom_list(Rest, [Value | Acc]);
+atom_list(_, _) ->
+    error.
 
 -spec determine_shard_count() -> {pos_integer(), configured | auto}.
 determine_shard_count() ->
@@ -198,179 +364,10 @@ determine_shard_count() ->
 
 -spec default_shard_count() -> pos_integer().
 default_shard_count() ->
-    Candidates = [
+    shard_utils:max_positive([
         erlang:system_info(logical_processors_available),
         erlang:system_info(schedulers_online)
-    ],
-    lists:max([C || C <- Candidates, is_integer(C), C > 0] ++ [1]).
-
--spec start_shards(pos_integer()) -> #{non_neg_integer() => shard()}.
-start_shards(Count) ->
-    lists:foldl(
-        fun(Index, Acc) ->
-            case start_shard(Index) of
-                {ok, Shard} ->
-                    maps:put(Index, Shard, Acc);
-                {error, _Reason} ->
-                    Acc
-            end
-        end,
-        #{},
-        lists:seq(0, Count - 1)
-    ).
-
--spec start_shard(non_neg_integer()) -> {ok, shard()} | {error, term()}.
-start_shard(Index) ->
-    case session_manager_shard:start_link(Index) of
-        {ok, Pid} ->
-            Ref = erlang:monitor(process, Pid),
-            put_shard_pid(Index, Pid),
-            {ok, #{pid => Pid, ref => Ref}};
-        Error ->
-            Error
-    end.
-
--spec restart_shard(non_neg_integer(), state()) -> {shard(), state()}.
-restart_shard(Index, State) ->
-    case start_shard(Index) of
-        {ok, Shard} ->
-            Shards = maps:get(shards, State),
-            NewState = State#{shards := maps:put(Index, Shard, Shards)},
-            sync_shard_table(NewState),
-            {Shard, NewState};
-        {error, _Reason} ->
-            Dummy = #{pid => spawn(fun() -> exit(normal) end), ref => make_ref()},
-            {Dummy, State}
-    end.
-
--spec ensure_shard(session_id(), state()) -> {non_neg_integer(), state()}.
-ensure_shard(SessionId, State) ->
-    Count = maps:get(shard_count, State),
-    Shards = maps:get(shards, State),
-    Index = select_shard(SessionId, Count),
-    case maps:get(Index, Shards, undefined) of
-        undefined ->
-            {_Shard, NewState} = restart_shard(Index, State),
-            {Index, NewState};
-        #{pid := Pid} ->
-            case erlang:is_process_alive(Pid) of
-                true ->
-                    {Index, State};
-                false ->
-                    {_Shard, NewState} = restart_shard(Index, State),
-                    {Index, NewState}
-            end
-    end.
-
--spec aggregate_counts(term(), state()) -> {non_neg_integer(), state()}.
-aggregate_counts(Request, State) ->
-    Shards = maps:get(shards, State),
-    Counts =
-        lists:map(
-            fun(#{pid := Pid}) ->
-                case catch gen_server:call(Pid, Request, ?DEFAULT_GEN_SERVER_TIMEOUT) of
-                    {ok, Count} when is_integer(Count) ->
-                        Count;
-                    Count when is_integer(Count) ->
-                        Count;
-                    _ ->
-                        0
-                end
-            end,
-            maps:values(Shards)
-        ),
-    {lists:sum(Counts), State}.
-
--spec ensure_shard_table() -> ok.
-ensure_shard_table() ->
-    case ets:whereis(?SHARD_TABLE) of
-        undefined ->
-            _ = ets:new(?SHARD_TABLE, [named_table, public, set, {read_concurrency, true}]),
-            ok;
-        _ ->
-            ok
-    end.
-
--spec sync_shard_table(state()) -> ok.
-sync_shard_table(State) ->
-    ensure_shard_table(),
-    _ = ets:delete_all_objects(?SHARD_TABLE),
-    ShardCount = maps:get(shard_count, State),
-    ets:insert(?SHARD_TABLE, {shard_count, ShardCount}),
-    Shards = maps:get(shards, State),
-    lists:foreach(
-        fun({Index, #{pid := Pid}}) ->
-            put_shard_pid(Index, Pid)
-        end,
-        maps:to_list(Shards)
-    ),
-    ok.
-
--spec put_shard_pid(non_neg_integer(), pid()) -> ok.
-put_shard_pid(Index, Pid) ->
-    ets:insert(?SHARD_TABLE, {{shard_pid, Index}, Pid}),
-    ok.
-
--spec shard_pid_from_table(session_id()) -> {ok, pid()} | error.
-shard_pid_from_table(SessionId) ->
-    try
-        case ets:lookup(?SHARD_TABLE, shard_count) of
-            [{shard_count, ShardCount}] when is_integer(ShardCount), ShardCount > 0 ->
-                Index = select_shard(SessionId, ShardCount),
-                case ets:lookup(?SHARD_TABLE, {shard_pid, Index}) of
-                    [{{shard_pid, Index}, Pid}] when is_pid(Pid) ->
-                        case erlang:is_process_alive(Pid) of
-                            true -> {ok, Pid};
-                            false -> error
-                        end;
-                    _ ->
-                        error
-                end;
-            _ ->
-                error
-        end
-    catch
-        error:badarg ->
-            error
-    end.
-
--spec select_shard(session_id(), pos_integer()) -> non_neg_integer().
-select_shard(SessionId, Count) when Count > 0 ->
-    rendezvous_router:select(SessionId, Count).
-
--spec find_shard_by_ref(reference(), #{non_neg_integer() => shard()}) ->
-    {ok, non_neg_integer()} | not_found.
-find_shard_by_ref(Ref, Shards) ->
-    maps:fold(
-        fun
-            (_Index, _Shard, {ok, _} = Found) ->
-                Found;
-            (Index, #{ref := ExistingRef}, not_found) ->
-                case ExistingRef =:= Ref of
-                    true -> {ok, Index};
-                    false -> not_found
-                end
-        end,
-        not_found,
-        Shards
-    ).
-
--spec find_shard_by_pid(pid(), #{non_neg_integer() => shard()}) ->
-    {ok, non_neg_integer()} | not_found.
-find_shard_by_pid(Pid, Shards) ->
-    maps:fold(
-        fun
-            (_Index, _Shard, {ok, _} = Found) ->
-                Found;
-            (Index, #{pid := ExistingPid}, not_found) ->
-                case ExistingPid =:= Pid of
-                    true -> {ok, Index};
-                    false -> not_found
-                end
-        end,
-        not_found,
-        Shards
-    ).
+    ]).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -390,34 +387,20 @@ default_shard_count_positive_test() ->
     Count = default_shard_count(),
     ?assert(Count >= 1).
 
-select_shard_deterministic_test() ->
-    SessionId = <<"session-abc">>,
-    ShardCount = 8,
-    Shard1 = select_shard(SessionId, ShardCount),
-    Shard2 = select_shard(SessionId, ShardCount),
-    ?assertEqual(Shard1, Shard2).
-
-select_shard_in_range_test() ->
-    ShardCount = 8,
-    lists:foreach(
-        fun(N) ->
-            SessionId = list_to_binary(integer_to_list(N)),
-            Shard = select_shard(SessionId, ShardCount),
-            ?assert(Shard >= 0 andalso Shard < ShardCount)
-        end,
-        lists:seq(1, 100)
-    ).
-
 with_runtime_config(Key, Value, Fun) ->
+    case persistent_term:get({fluxer_gateway, runtime_config}, undefined) of
+        undefined -> persistent_term:put({fluxer_gateway, runtime_config}, #{});
+        _ -> ok
+    end,
     Original = fluxer_gateway_env:get(Key),
     fluxer_gateway_env:patch(#{Key => Value}),
     Result = Fun(),
-    fluxer_gateway_env:update(fun(Map) ->
-        case Original of
-            undefined -> maps:remove(Key, Map);
-            Existing -> maps:put(Key, Existing, Map)
-        end
-    end),
+    fluxer_gateway_env:update(fun(Map) -> restore_runtime_config(Key, Original, Map) end),
     Result.
+
+restore_runtime_config(Key, undefined, Map) ->
+    maps:remove(Key, Map);
+restore_runtime_config(Key, Existing, Map) ->
+    Map#{Key => Existing}.
 
 -endif.

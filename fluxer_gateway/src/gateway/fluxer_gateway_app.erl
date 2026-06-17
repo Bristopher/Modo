@@ -1,44 +1,75 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(fluxer_gateway_app).
+-typing([eqwalizer]).
 -behaviour(application).
--export([start/2, stop/1]).
+-export([start/2, prep_stop/1, stop/1]).
 
 -spec start(application:start_type(), term()) -> {ok, pid()} | {error, term()}.
 start(_StartType, _StartArgs) ->
-    fluxer_gateway_env:load(),
-    otel_metrics:init(),
-    passive_sync_registry:init(),
-    guild_counts_cache:init(),
+    erlang:system_flag(fullsweep_after, 0),
+    init_jose(),
+    init_subsystems(),
     {ok, Pid} = fluxer_gateway_sup:start_link(),
+    {ok, _} = start_cowboy(),
+    {ok, Pid}.
+
+-spec init_jose() -> ok.
+init_jose() ->
+    case code:ensure_loaded(jose_json_otp) of
+        {module, jose_json_otp} -> ok;
+        {error, EnsureErr} -> erlang:error({jose_json_otp_missing, EnsureErr})
+    end,
+    application:set_env(jose, json_module, jose_json_otp),
+    {ok, _} = application:ensure_all_started(jose),
+    _ = jose:json_module(jose_json_otp),
+    case jose:json_module() of
+        jose_json_otp -> ok;
+        Other -> erlang:error({jose_json_module_registration_failed, Other})
+    end.
+
+-spec init_subsystems() -> ok.
+init_subsystems() ->
+    _ = fluxer_gateway_env:load(),
+    gateway_cluster_metrics:init(),
+    process_registry:init(),
+    passive_sync_registry:init(),
+    ok.
+
+-spec start_cowboy() -> {ok, pid()} | {error, term()}.
+start_cowboy() ->
     Port = fluxer_gateway_env:get(port),
     Dispatch = cowboy_router:compile([
         {'_', [
-            {<<"/_health">>, health_handler, []},
-            {<<"/_admin/reload">>, hot_reload_handler, []},
+            {<<"/_health">>, health_handler, liveness},
+            {<<"/_health/ready">>, health_handler, readiness},
+            {<<"/_health/drain">>, health_handler, drain},
+            {<<"/_metrics">>, metrics_handler, []},
             {<<"/">>, gateway_handler, []}
         ]}
     ]),
-    {ok, _} = cowboy:start_clear(http, [{port, Port}], #{
-        env => #{dispatch => Dispatch},
-        max_frame_size => 4096
-    }),
-    {ok, Pid}.
+    case
+        cowboy:start_clear(
+            http,
+            #{
+                socket_opts => [{port, Port}],
+                max_connections => infinity
+            },
+            #{
+                env => #{dispatch => Dispatch},
+                max_frame_size => 4096,
+                connection_type => supervisor,
+                dynamic_buffer => {512, 131072}
+            }
+        )
+    of
+        {ok, Pid} -> {ok, Pid};
+        {error, E} -> {error, E}
+    end.
+
+-spec prep_stop(term()) -> term().
+prep_stop(State) ->
+    State.
 
 -spec stop(term()) -> ok.
 stop(_State) ->

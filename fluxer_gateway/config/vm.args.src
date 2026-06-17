@@ -1,11 +1,23 @@
-${FLUXER_GATEWAY_NODE_FLAG} ${FLUXER_GATEWAY_NODE_NAME}
+# SPDX-License-Identifier: AGPL-3.0-or-later
+-name ${FLUXER_ERLANG_NODE_NAME}
+-setcookie ${FLUXER_ERLANG_COOKIE}
 +K true
-+A30
++A16
 -env ERL_MAX_PORTS 4096
 -env ERL_PROCESSES 262144
 +P 262144
 +Q 65536
-+S 4:4
++S 6:6
++SDcpu 4:4
++SDio 8
++sbwt none
++sbwtdcpu none
++sbwtdio none
 +zdbbl 32768
--kernel logger_level ${LOGGER_LEVEL}
--kernel inet_backend socket
++MBacul 0
++MBramv true
++hms 233
++hmbs 46422
+-kernel logger_level warning
+-kernel inet_dist_listen_min ${FLUXER_ERLANG_DIST_PORT}
+-kernel inet_dist_listen_max ${FLUXER_ERLANG_DIST_PORT}

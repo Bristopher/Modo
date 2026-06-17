@@ -1,0 +1,65 @@
+{
+	"name": "@pkgs/worker",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"exports": {
+		"./WorkerFactory": {
+			"import": "./src/runtime/WorkerFactory.ts",
+			"types": "./src/runtime/WorkerFactory.ts"
+		},
+		"./WorkerContext": {
+			"import": "./src/context/WorkerContext.ts",
+			"types": "./src/context/WorkerContext.ts"
+		},
+		"./WorkerTask": {
+			"import": "./src/contracts/WorkerTask.ts",
+			"types": "./src/contracts/WorkerTask.ts"
+		},
+		"./IWorkerService": {
+			"import": "./src/contracts/IWorkerService.ts",
+			"types": "./src/contracts/IWorkerService.ts"
+		},
+		"./WorkerTypes": {
+			"import": "./src/contracts/WorkerTypes.ts",
+			"types": "./src/contracts/WorkerTypes.ts"
+		},
+		"./IQueueProvider": {
+			"import": "./src/providers/IQueueProvider.ts",
+			"types": "./src/providers/IQueueProvider.ts"
+		},
+		"./HttpWorkerQueue": {
+			"import": "./src/providers/HttpWorkerQueue.ts",
+			"types": "./src/providers/HttpWorkerQueue.ts"
+		},
+		"./QueueProviderFactory": {
+			"import": "./src/providers/QueueProviderFactory.ts",
+			"types": "./src/providers/QueueProviderFactory.ts"
+		},
+		"./WorkerRunner": {
+			"import": "./src/runtime/WorkerRunner.ts",
+			"types": "./src/runtime/WorkerRunner.ts"
+		},
+		"./WorkerService": {
+			"import": "./src/services/WorkerService.ts",
+			"types": "./src/services/WorkerService.ts"
+		},
+		"./WorkerTaskRegistry": {
+			"import": "./src/runtime/WorkerTaskRegistry.ts",
+			"types": "./src/runtime/WorkerTaskRegistry.ts"
+		},
+		"./*": "./*"
+	},
+	"scripts": {
+		"typecheck": "tsgo --noEmit"
+	},
+	"dependencies": {
+		"@fluxer/constants": "workspace:*",
+		"@fluxer/logger": "workspace:*",
+		"itty-time": "catalog:"
+	},
+	"devDependencies": {
+		"@types/node": "catalog:",
+		"@typescript/native-preview": "catalog:"
+	}
+}

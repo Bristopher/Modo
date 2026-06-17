@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(voice_disconnect_common).
+-typing([eqwalizer]).
 
 -export([
     find_session_by_user_id/2,
@@ -27,6 +13,17 @@
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
+
+-export_type([
+    user_id/0,
+    session_id/0,
+    session_pid/0,
+    monitor_ref/0,
+    session_tuple/0,
+    sessions_map/0,
+    voice_states_map/0,
+    cleanup_fun/0
+]).
 
 -type user_id() :: integer().
 -type session_id() :: binary().
@@ -54,16 +51,40 @@ find_session_by_user_id(UserId, Sessions) ->
 -spec disconnect_user(user_id(), voice_states_map(), sessions_map(), cleanup_fun()) ->
     {ok, voice_states_map(), sessions_map()} | {not_found, voice_states_map(), sessions_map()}.
 disconnect_user(UserId, VoiceStates, Sessions, CleanupFun) ->
-    case find_session_by_user_id(UserId, Sessions) of
-        not_found ->
+    case sessions_for_user(UserId, Sessions) of
+        [] ->
             {not_found, VoiceStates, Sessions};
-        {ok, SessionId, _Pid, Ref} ->
+        UserSessions ->
+            NewSessions = remove_user_sessions(UserId, UserSessions, Sessions, CleanupFun),
+            {ok, maps:remove(UserId, VoiceStates), NewSessions}
+    end.
+
+-spec remove_user_sessions(
+    user_id(), [{session_id(), monitor_ref()}], sessions_map(), cleanup_fun()
+) -> sessions_map().
+remove_user_sessions(UserId, UserSessions, Sessions, CleanupFun) ->
+    lists:foldl(
+        fun({SessionId, Ref}, Acc) ->
             demonitor(Ref, [flush]),
             CleanupFun(UserId, SessionId),
-            NewVoiceStates = maps:remove(UserId, VoiceStates),
-            NewSessions = maps:remove(SessionId, Sessions),
-            {ok, NewVoiceStates, NewSessions}
-    end.
+            maps:remove(SessionId, Acc)
+        end,
+        Sessions,
+        UserSessions
+    ).
+
+-spec sessions_for_user(user_id(), sessions_map()) -> [{session_id(), monitor_ref()}].
+sessions_for_user(UserId, Sessions) ->
+    maps:fold(
+        fun
+            (SessionId, {U, _Pid, Ref}, Acc) when U =:= UserId ->
+                [{SessionId, Ref} | Acc];
+            (_, _, Acc) ->
+                Acc
+        end,
+        [],
+        Sessions
+    ).
 
 -spec disconnect_user_if_in_channel(
     user_id(), integer(), voice_states_map(), sessions_map(), cleanup_fun()
@@ -76,14 +97,29 @@ disconnect_user_if_in_channel(UserId, ExpectedChannelId, VoiceStates, Sessions, 
         undefined ->
             {not_found, VoiceStates, Sessions};
         VoiceState ->
-            ChannelIdBin = maps:get(<<"channel_id">>, VoiceState, undefined),
-            ExpectedBin = integer_to_binary(ExpectedChannelId),
-            case ChannelIdBin =:= ExpectedBin of
-                false ->
-                    {channel_mismatch, VoiceStates, Sessions};
-                true ->
-                    disconnect_user(UserId, VoiceStates, Sessions, CleanupFun)
-            end
+            disconnect_matching_channel(
+                UserId,
+                ExpectedChannelId,
+                VoiceState,
+                VoiceStates,
+                Sessions,
+                CleanupFun
+            )
+    end.
+
+-spec disconnect_matching_channel(
+    user_id(), integer(), map(), voice_states_map(), sessions_map(), cleanup_fun()
+) ->
+    {ok, voice_states_map(), sessions_map()}
+    | {not_found, voice_states_map(), sessions_map()}
+    | {channel_mismatch, voice_states_map(), sessions_map()}.
+disconnect_matching_channel(
+    UserId, ExpectedChannelId, VoiceState, VoiceStates, Sessions, CleanupFun
+) ->
+    ChannelIdBin = maps:get(<<"channel_id">>, VoiceState, undefined),
+    case snowflake_id:equal(ExpectedChannelId, ChannelIdBin) of
+        false -> {channel_mismatch, VoiceStates, Sessions};
+        true -> disconnect_user(UserId, VoiceStates, Sessions, CleanupFun)
     end.
 
 -spec channel_has_capacity(binary() | integer(), non_neg_integer(), voice_states_map()) ->
@@ -94,15 +130,19 @@ channel_has_capacity(ChannelId, UserLimit, VoiceStates) ->
     ChannelIdBin = ensure_binary(ChannelId),
     UsersInChannel = maps:fold(
         fun(_UserId, VoiceState, Count) ->
-            case maps:get(<<"channel_id">>, VoiceState, undefined) of
-                ChannelIdBin -> Count + 1;
-                _ -> Count
-            end
+            increment_if_channel_matches(VoiceState, ChannelIdBin, Count)
         end,
         0,
         VoiceStates
     ),
     UsersInChannel < UserLimit.
+
+-spec increment_if_channel_matches(map(), binary(), non_neg_integer()) -> non_neg_integer().
+increment_if_channel_matches(VoiceState, ChannelIdBin, Count) ->
+    case maps:get(<<"channel_id">>, VoiceState, undefined) of
+        ChannelIdBin -> Count + 1;
+        _ -> Count
+    end.
 
 -spec ensure_binary(binary() | integer()) -> binary().
 ensure_binary(Value) when is_binary(Value) -> Value;

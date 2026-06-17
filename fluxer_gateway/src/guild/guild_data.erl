@@ -1,121 +1,192 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(guild_data).
+-typing([eqwalizer]).
 
 -export([get_guild_data/2]).
 -export([get_guild_member/2]).
+-export([get_guild_members_batch/2]).
 -export([has_member/2]).
 -export([list_guild_members/2]).
+-export([search_guild_members/2]).
 -export([get_vanity_url_channel/1]).
 -export([get_first_viewable_text_channel/1]).
 -export([get_guild_state/2]).
+-export([fetch_latest_voice_states/1]).
 -export([find_everyone_viewable_text_channel/2]).
 
 -type guild_state() :: map().
 -type guild_reply(T) :: {reply, T, guild_state()}.
--type guild_data_map() :: map().
--type guild_member() :: map().
--type channel_list() :: [map()].
 -type user_id() :: integer().
+-type guild_id() :: integer().
 
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
--endif.
+-export_type([guild_state/0, guild_reply/1, user_id/0]).
 
 -spec get_guild_data(map(), guild_state()) -> guild_reply(map()).
 get_guild_data(#{user_id := UserId}, State) ->
-    Data = guild_data_map(State),
+    Data = guild_data_index:ensure_data_map(State),
     case UserId of
         null ->
             GuildData = build_complete_guild_data(Data, State),
-            Reply = #{guild_data => GuildData},
-            {reply, Reply, State};
+            {reply, #{guild_data => GuildData}, State};
         _ ->
-            case guild_data_index:get_member(UserId, Data) of
-                undefined ->
-                    {reply, #{guild_data => null, error_reason => <<"forbidden">>}, State};
-                _ ->
-                    GuildData = build_complete_guild_data(Data, State),
-                    {reply, #{guild_data => GuildData}, State}
-            end
+            get_guild_data_for_user(UserId, Data, State)
     end.
 
 -spec get_guild_member(map(), guild_state()) -> guild_reply(map()).
-get_guild_member(#{user_id := UserId}, State) ->
-    case find_member_by_user_id(UserId, State) of
-        undefined ->
-            {reply, #{success => false, member_data => null}, State};
-        Member ->
-            {reply, #{success => true, member_data => Member}, State}
-    end.
+get_guild_member(Request, State) ->
+    guild_data_members:get_guild_member(Request, State).
+
+-spec get_guild_members_batch(map(), guild_state()) -> guild_reply(map()).
+get_guild_members_batch(Request, State) ->
+    guild_data_members:get_guild_members_batch(Request, State).
 
 -spec has_member(map(), guild_state()) -> guild_reply(map()).
-has_member(#{user_id := UserId}, State) ->
-    case find_member_by_user_id(UserId, State) of
-        undefined ->
-            {reply, #{has_member => false}, State};
-        _ ->
-            {reply, #{has_member => true}, State}
-    end.
+has_member(Request, State) ->
+    guild_data_members:has_member(Request, State).
 
 -spec list_guild_members(map(), guild_state()) -> guild_reply(map()).
-list_guild_members(#{limit := Limit, offset := Offset}, State) ->
-    Data = guild_data_map(State),
-    AllMembers = guild_data_index:member_list(Data),
-    TotalCount = length(AllMembers),
-    PaginatedMembers = paginate_members(AllMembers, Limit, Offset),
-    {reply, #{members => PaginatedMembers, total => TotalCount}, State}.
+list_guild_members(Request, State) ->
+    guild_data_members:list_guild_members(Request, State).
+
+-spec search_guild_members(map(), guild_state()) -> guild_reply(map()).
+search_guild_members(Request, State) ->
+    guild_data_members:search_guild_members(Request, State).
 
 -spec get_vanity_url_channel(guild_state()) -> guild_reply(map()).
 get_vanity_url_channel(State) ->
-    Channels = channels_from_state(State),
-    EveryoneChannelId = find_everyone_viewable_text_channel(Channels, State),
-    {reply, #{channel_id => EveryoneChannelId}, State}.
+    get_everyone_viewable_text_channel(State).
 
 -spec get_first_viewable_text_channel(guild_state()) -> guild_reply(map()).
 get_first_viewable_text_channel(State) ->
-    Channels = channels_from_state(State),
-    EveryoneChannelId = find_everyone_viewable_text_channel(Channels, State),
+    get_everyone_viewable_text_channel(State).
+
+-spec get_everyone_viewable_text_channel(guild_state()) -> guild_reply(map()).
+get_everyone_viewable_text_channel(State) ->
+    Channels = guild_data_channels:channels_from_state(State),
+    EveryoneChannelId = guild_data_channels:find_everyone_viewable_text_channel(
+        Channels, State
+    ),
     {reply, #{channel_id => EveryoneChannelId}, State}.
+
+-spec find_everyone_viewable_text_channel([map()], guild_state()) -> integer() | null.
+find_everyone_viewable_text_channel(Channels, State) ->
+    guild_data_channels:find_everyone_viewable_text_channel(Channels, State).
 
 -spec get_guild_state(user_id(), guild_state()) -> map().
 get_guild_state(UserId, State) ->
-    Data = guild_data_map(State),
-    GuildId = map_utils:get_integer(State, id, 0),
-    AllChannels = channels_from_data(Data),
+    Data = guild_data_index:ensure_data_map(State),
+    GuildId = guild_id(State),
+    AllChannels = guild_data_channels:channels_from_data(Data),
     AllMembers = guild_data_index:member_values(Data),
-    Member = find_member_by_user_id(UserId, State),
-    {ViewableChannels, JoinedAt} = derive_member_view(UserId, Member, State, AllChannels),
+    Member = guild_data_members:find_member_by_user_id(UserId, State),
+    {ViewableChannels, JoinedAt} = guild_data_channels:derive_member_view(
+        UserId, Member, State, AllChannels
+    ),
     OnlineCount = guild_member_list:get_online_count(State),
-    OwnMemberList =
-        case Member of
-            undefined -> [];
-            M -> [M]
-        end,
-    VoiceStates = guild_voice:get_voice_states_list(State),
-    VoiceMembers = voice_members_from_states(VoiceStates, AllMembers),
-    Members = merge_members(OwnMemberList, VoiceMembers),
+    OwnMemberList = own_member_list(Member),
+    StateWithVoice = fetch_latest_voice_states(State),
+    AllVoiceStates = guild_voice:get_voice_states_list(StateWithVoice),
+    ViewableChannelIds = channel_id_set(ViewableChannels),
+    VoiceStates = filter_voice_states(AllVoiceStates, ViewableChannelIds),
+    VoiceMembers = guild_data_channels:voice_members_from_states(VoiceStates, AllMembers),
+    Members = guild_data_channels:merge_members(OwnMemberList, VoiceMembers),
     MemberCount = maps:get(member_count, State, length(AllMembers)),
+    build_guild_state_map(
+        GuildId,
+        Data,
+        ViewableChannels,
+        Members,
+        MemberCount,
+        OnlineCount,
+        VoiceStates,
+        JoinedAt
+    ).
+
+-spec fetch_latest_voice_states(guild_state()) -> guild_state().
+fetch_latest_voice_states(State) ->
+    case maps:get(voice_server_pid, State, undefined) of
+        VoiceServerPid when is_pid(VoiceServerPid), VoiceServerPid =/= self() ->
+            fetch_from_voice_pid(VoiceServerPid, State);
+        _ ->
+            fetch_from_voice_registry(State)
+    end.
+
+-spec get_guild_data_for_user(user_id(), map(), guild_state()) -> guild_reply(map()).
+get_guild_data_for_user(UserId, Data, State) ->
+    case guild_data_index:get_member(UserId, Data) of
+        undefined ->
+            {reply, #{guild_data => null, error_reason => <<"forbidden">>}, State};
+        Member ->
+            GuildData = build_member_guild_data(UserId, Member, Data, State),
+            {reply, #{guild_data => GuildData}, State}
+    end.
+
+-spec build_complete_guild_data(map(), guild_state()) -> map().
+build_complete_guild_data(Data, State) ->
+    GuildProperties = maps:get(<<"guild">>, Data, #{}),
+    Channels = map_utils:ensure_list(maps:get(<<"channels">>, Data, [])),
+    maps:merge(GuildProperties, build_guild_collection_data(Data, Channels, State)).
+
+-spec build_member_guild_data(user_id(), map(), map(), guild_state()) -> map().
+build_member_guild_data(UserId, Member, Data, State) ->
+    GuildProperties = maps:get(<<"guild">>, Data, #{}),
+    AllChannels = guild_data_channels:channels_from_data(Data),
+    {ViewableChannels, _JoinedAt} = guild_data_channels:derive_member_view(
+        UserId, Member, State, AllChannels
+    ),
+    maps:merge(GuildProperties, build_guild_collection_data(Data, ViewableChannels, State)).
+
+-spec build_guild_collection_data(map(), [map()], guild_state()) -> map().
+build_guild_collection_data(Data, Channels, State) ->
     #{
-        <<"id">> => integer_to_binary(GuildId),
+        <<"roles">> => map_utils:ensure_list(maps:get(<<"roles">>, Data, [])),
+        <<"channels">> => map_utils:ensure_list(Channels),
+        <<"emojis">> => map_utils:ensure_list(maps:get(<<"emojis">>, Data, [])),
+        <<"stickers">> => map_utils:ensure_list(maps:get(<<"stickers">>, Data, [])),
+        <<"member_count">> => maps:get(
+            member_count, State, guild_data_index:member_count(Data)
+        ),
+        <<"online_count">> => guild_member_list:get_online_count(State)
+    }.
+
+-spec own_member_list(map() | undefined) -> [map()].
+own_member_list(undefined) -> [];
+own_member_list(M) -> [M].
+
+-spec filter_voice_states([map()], sets:set(integer())) -> [map()].
+filter_voice_states(AllVoiceStates, ViewableChannelIds) ->
+    [
+        guild_data_channels:sanitize_voice_state(VS)
+     || VS <- AllVoiceStates,
+        voice_state_in_viewable_channel(VS, ViewableChannelIds)
+    ].
+
+-spec build_guild_state_map(
+    guild_id() | undefined,
+    map(),
+    [map()],
+    [map()],
+    non_neg_integer(),
+    non_neg_integer(),
+    [map()],
+    term()
+) -> map().
+build_guild_state_map(
+    GuildId,
+    Data,
+    Channels,
+    Members,
+    MemberCount,
+    OnlineCount,
+    VoiceStates,
+    JoinedAt
+) ->
+    #{
+        <<"id">> => guild_id_wire_value(GuildId),
         <<"properties">> => maps:get(<<"guild">>, Data, #{}),
         <<"roles">> => map_utils:ensure_list(maps:get(<<"roles">>, Data, [])),
-        <<"channels">> => ViewableChannels,
+        <<"channels">> => Channels,
         <<"emojis">> => maps:get(<<"emojis">>, Data, []),
         <<"stickers">> => maps:get(<<"stickers">>, Data, []),
         <<"members">> => Members,
@@ -126,249 +197,90 @@ get_guild_state(UserId, State) ->
         <<"joined_at">> => JoinedAt
     }.
 
--spec find_everyone_viewable_text_channel(channel_list(), guild_state()) -> integer() | null.
-find_everyone_viewable_text_channel(Channels, State) ->
-    GuildId = map_utils:get_integer(State, id, 0),
-    Data = guild_data_map(State),
-    Roles = map_utils:ensure_list(maps:get(<<"roles">>, Data, [])),
-    EveryonePerms = role_permissions_for_id(Roles, GuildId),
-    lists:foldl(
-        fun(Channel, Acc) ->
-            case Acc of
-                null ->
-                    select_first_viewable(Channel, GuildId, EveryonePerms);
-                _ ->
-                    Acc
-            end
-        end,
-        null,
-        map_utils:ensure_list(Channels)
-    ).
-
--spec find_member_by_user_id(user_id(), guild_state()) -> guild_member() | undefined.
-find_member_by_user_id(UserId, State) ->
-    guild_permissions:find_member_by_user_id(UserId, State).
-
--spec guild_data_map(guild_state()) -> guild_data_map().
-guild_data_map(State) ->
-    map_utils:ensure_map(map_utils:get_safe(State, data, #{})).
-
--spec build_complete_guild_data(guild_data_map(), guild_state()) -> map().
-build_complete_guild_data(Data, _State) ->
-    GuildProperties = maps:get(<<"guild">>, Data, #{}),
-    maps:merge(GuildProperties, #{
-        <<"roles">> => map_utils:ensure_list(maps:get(<<"roles">>, Data, [])),
-        <<"channels">> => map_utils:ensure_list(maps:get(<<"channels">>, Data, [])),
-        <<"emojis">> => map_utils:ensure_list(maps:get(<<"emojis">>, Data, [])),
-        <<"stickers">> => map_utils:ensure_list(maps:get(<<"stickers">>, Data, []))
-    }).
-
--spec channels_from_state(guild_state()) -> channel_list().
-channels_from_state(State) ->
-    Data = guild_data_map(State),
-    channels_from_data(Data).
-
--spec channels_from_data(guild_data_map()) -> channel_list().
-channels_from_data(Data) ->
-    guild_data_index:channel_list(Data).
-
--spec paginate_members([guild_member()], non_neg_integer(), non_neg_integer()) -> [guild_member()].
-paginate_members(Members, Limit, Offset) ->
-    case Offset >= length(Members) of
-        true ->
-            [];
-        false ->
-            Remaining = lists:nthtail(Offset, Members),
-            case length(Remaining) > Limit of
-                true -> lists:sublist(Remaining, Limit);
-                false -> Remaining
-            end
+-spec fetch_from_voice_pid(pid(), guild_state()) -> guild_state().
+fetch_from_voice_pid(VoiceServerPid, State) ->
+    case erlang:process_info(VoiceServerPid, message_queue_len) of
+        undefined ->
+            fetch_from_voice_registry(maps:remove(voice_server_pid, State));
+        {message_queue_len, Q} when Q >= 50 ->
+            State;
+        _ ->
+            try_voice_call(VoiceServerPid, State)
     end.
 
--spec derive_member_view(user_id(), guild_member() | undefined, guild_state(), channel_list()) ->
-    {channel_list(), term()}.
-derive_member_view(_UserId, undefined, _State, _Channels) ->
-    {[], null};
-derive_member_view(UserId, Member, State, Channels) ->
-    Filtered =
-        lists:filter(
-            fun(Channel) ->
-                ChannelId = map_utils:get_integer(Channel, <<"id">>, undefined),
-                case ChannelId of
-                    undefined -> false;
-                    _ -> guild_permissions:can_view_channel(UserId, ChannelId, Member, State)
-                end
-            end,
-            Channels
-        ),
-    JoinedAt = maps:get(<<"joined_at">>, Member, null),
-    {Filtered, JoinedAt}.
+-spec try_voice_call(pid(), guild_state()) -> guild_state().
+try_voice_call(VoiceServerPid, State) ->
+    try gen_server:call(VoiceServerPid, {get_voice_states_map}, 200) of
+        VoiceStates when is_map(VoiceStates) ->
+            State#{voice_states => voice_state_utils:ensure_voice_states(VoiceStates)};
+        _ ->
+            State#{voice_states => #{}}
+    catch
+        exit:{timeout, _} -> State;
+        exit:_ -> fetch_from_voice_registry(maps:remove(voice_server_pid, State))
+    end.
 
--spec voice_members_from_states([map()], [guild_member()]) -> [guild_member()].
-voice_members_from_states(VoiceStates, Members) ->
-    MemberIndex = build_member_index(Members),
-    lists:filtermap(
-        fun(VoiceState) ->
-            case voice_state_utils:voice_state_user_id(VoiceState) of
-                undefined ->
-                    false;
-                UserId ->
-                    case maps:get(UserId, MemberIndex, undefined) of
-                        undefined -> false;
-                        Member -> {true, Member}
-                    end
-            end
-        end,
-        VoiceStates
-    ).
+-spec fetch_from_voice_registry(guild_state()) -> guild_state().
+fetch_from_voice_registry(State) ->
+    case guild_id(State) of
+        undefined -> State#{voice_states => #{}};
+        GuildId -> fetch_from_voice_registry(GuildId, State)
+    end.
 
--spec build_member_index([guild_member()]) -> #{integer() => guild_member()}.
-build_member_index(Members) ->
-    lists:foldl(
-        fun(Member, Acc) ->
-            case member_user_id(Member) of
-                undefined -> Acc;
-                UserId -> maps:put(UserId, Member, Acc)
-            end
-        end,
-        #{},
-        Members
-    ).
+-spec fetch_from_voice_registry(guild_id(), guild_state()) -> guild_state().
+fetch_from_voice_registry(GuildId, State) ->
+    case guild_voice_server:lookup_registered(GuildId) of
+        {ok, VoiceServerPid} when VoiceServerPid =/= self() ->
+            fetch_latest_voice_states(State#{voice_server_pid => VoiceServerPid});
+        _ ->
+            State#{voice_states => #{}}
+    end.
 
--spec merge_members([guild_member()], [guild_member()]) -> [guild_member()].
-merge_members(Primary, Secondary) ->
-    {Merged, _} =
-        lists:foldl(
-            fun(Member, {Acc, Seen}) ->
-                case member_user_id(Member) of
-                    undefined ->
-                        {Acc, Seen};
-                    UserId ->
-                        case sets:is_element(UserId, Seen) of
-                            true -> {Acc, Seen};
-                            false -> {[Member | Acc], sets:add_element(UserId, Seen)}
-                        end
-                end
-            end,
-            {[], sets:new()},
-            Primary ++ Secondary
-        ),
-    lists:reverse(Merged).
+-spec guild_id(guild_state()) -> guild_id() | undefined.
+guild_id(State) ->
+    Data = guild_data_index:ensure_data_map(State),
+    Guild = map_utils:ensure_map(maps:get(<<"guild">>, Data, #{})),
+    first_snowflake([
+        maps:get(id, State, undefined),
+        maps:get(<<"id">>, State, undefined),
+        maps:get(<<"id">>, Guild, undefined)
+    ]).
 
--spec member_user_id(guild_member()) -> integer() | undefined.
-member_user_id(Member) ->
-    MemberUser = map_utils:ensure_map(maps:get(<<"user">>, Member, #{})),
-    map_utils:get_integer(MemberUser, <<"id">>, undefined).
+-spec first_snowflake([term()]) -> guild_id() | undefined.
+first_snowflake([]) ->
+    undefined;
+first_snowflake([Value | Rest]) ->
+    case snowflake_id:parse_optional(Value) of
+        undefined -> first_snowflake(Rest);
+        GuildId -> GuildId
+    end.
 
--spec role_permissions_for_id([map()], integer()) -> integer().
-role_permissions_for_id(Roles, GuildId) ->
-    lists:foldl(
-        fun(Role, Acc) ->
-            case map_utils:get_integer(Role, <<"id">>, undefined) of
-                GuildId -> map_utils:get_integer(Role, <<"permissions">>, 0);
-                _ -> Acc
-            end
-        end,
-        0,
-        map_utils:ensure_list(Roles)
-    ).
+-spec channel_id_set([map()]) -> sets:set(integer()).
+channel_id_set(Channels) ->
+    sets:from_list(channel_ids(Channels)).
 
--spec select_first_viewable(map(), integer(), integer()) -> integer() | null.
-select_first_viewable(Channel, GuildId, BasePerms) ->
-    ChannelType = map_utils:get_integer(Channel, <<"type">>, undefined),
-    ChannelId = map_utils:get_integer(Channel, <<"id">>, undefined),
-    select_first_viewable(ChannelType, ChannelId, Channel, GuildId, BasePerms).
+-spec channel_ids([map()]) -> [integer()].
+channel_ids(Channels) ->
+    lists:filtermap(fun channel_id_item/1, Channels).
 
--spec select_first_viewable(
-    integer() | undefined, integer() | undefined, map(), integer(), integer()
-) ->
-    integer() | null.
-select_first_viewable(0, ChannelId, Channel, GuildId, BasePerms) when is_integer(ChannelId) ->
-    case (BasePerms band constants:administrator_permission()) =/= 0 of
-        true ->
-            ChannelId;
-        false ->
-            FinalPerms = guild_permissions:apply_channel_overwrites(
-                BasePerms, GuildId, [GuildId], Channel, GuildId
-            ),
-            case (FinalPerms band constants:view_channel_permission()) =/= 0 of
-                true -> ChannelId;
-                false -> null
-            end
-    end;
-select_first_viewable(_, _, _, _, _) ->
-    null.
+-spec channel_id_item(map()) -> {true, integer()} | false.
+channel_id_item(Channel) ->
+    SafeChannel = map_utils:ensure_map(Channel),
+    case snowflake_id:parse_optional(maps:get(<<"id">>, SafeChannel, undefined)) of
+        ChannelId when is_integer(ChannelId) -> {true, ChannelId};
+        _ -> false
+    end.
 
--ifdef(TEST).
+-spec voice_state_in_viewable_channel(map(), sets:set(integer())) -> boolean().
+voice_state_in_viewable_channel(VoiceState, ViewableChannelIds) ->
+    SafeVoiceState = map_utils:ensure_map(VoiceState),
+    case snowflake_id:parse_optional(maps:get(<<"channel_id">>, SafeVoiceState, undefined)) of
+        ChannelId when is_integer(ChannelId) -> sets:is_element(ChannelId, ViewableChannelIds);
+        _ -> false
+    end.
 
-get_guild_data_membership_gate_test() ->
-    State = test_state(),
-    {reply, Reply1, _} = get_guild_data(#{user_id => 999}, State),
-    ?assertEqual(null, maps:get(guild_data, Reply1)),
-    ?assertEqual(<<"forbidden">>, maps:get(error_reason, Reply1)),
-
-    {reply, Reply2, _} = get_guild_data(#{user_id => 200}, State),
-    Guild = maps:get(guild_data, Reply2),
-    ?assertEqual(<<"Fluxer">>, maps:get(<<"name">>, Guild)),
-    Roles = maps:get(<<"roles">>, Guild, []),
-    ?assert(length(Roles) > 0).
-
-get_guild_state_filters_channels_test() ->
-    State = test_state(),
-    GuildState = get_guild_state(200, State),
-    Channels = maps:get(<<"channels">>, GuildState),
-    ?assert(lists:any(fun(Chan) -> maps:get(<<"id">>, Chan) =:= <<"500">> end, Channels)),
-    ?assertEqual(<<"2024-01-01T00:00:00Z">>, maps:get(<<"joined_at">>, GuildState)).
-
-find_everyone_viewable_text_channel_test() ->
-    State = test_state(),
-    Data = guild_data_map(State),
-    Channels = maps:get(<<"channels">>, Data),
-    ChannelId = find_everyone_viewable_text_channel(Channels, State),
-    ?assertEqual(500, ChannelId).
-
-paginate_members_test() ->
-    Members = [#{<<"id">> => 1}, #{<<"id">> => 2}, #{<<"id">> => 3}],
-    ?assertEqual([#{<<"id">> => 1}, #{<<"id">> => 2}], paginate_members(Members, 2, 0)),
-    ?assertEqual([#{<<"id">> => 2}, #{<<"id">> => 3}], paginate_members(Members, 2, 1)),
-    ?assertEqual([#{<<"id">> => 3}], paginate_members(Members, 2, 2)),
-    ?assertEqual([], paginate_members(Members, 2, 5)).
-
-test_state() ->
-    GuildId = 100,
-    ViewPerm = constants:view_channel_permission(),
-    #{
-        id => GuildId,
-        data => #{
-            <<"guild">> => #{<<"name">> => <<"Fluxer">>},
-            <<"roles">> => [
-                #{
-                    <<"id">> => integer_to_binary(GuildId),
-                    <<"permissions">> => integer_to_binary(ViewPerm)
-                }
-            ],
-            <<"channels">> => [
-                #{
-                    <<"id">> => <<"500">>,
-                    <<"type">> => 0,
-                    <<"permission_overwrites">> => []
-                },
-                #{
-                    <<"id">> => <<"501">>,
-                    <<"type">> => 2,
-                    <<"permission_overwrites">> => []
-                }
-            ],
-            <<"members">> => [
-                #{
-                    <<"user">> => #{<<"id">> => <<"200">>},
-                    <<"roles">> => [integer_to_binary(GuildId)],
-                    <<"joined_at">> => <<"2024-01-01T00:00:00Z">>
-                }
-            ],
-            <<"emojis">> => [],
-            <<"stickers">> => []
-        }
-    }.
-
--endif.
+-spec guild_id_wire_value(guild_id() | undefined) -> binary() | null.
+guild_id_wire_value(undefined) ->
+    null;
+guild_id_wire_value(GuildId) ->
+    integer_to_binary(GuildId).

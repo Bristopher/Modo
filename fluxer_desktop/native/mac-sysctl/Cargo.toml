@@ -1,0 +1,21 @@
+[package]
+name = "fluxer_mac_sysctl"
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[workspace]
+resolver = "2"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+napi = {version = "3.9.1", default-features = false, features = ["dyn-symbols", "napi8", "tokio_rt"]}
+napi-derive = "3.5.6"
+sysctl = "0.7.1"
+tokio = {version = "1.52.3", features = ["rt"]}
+
+[build-dependencies]
+napi-build = "2.3.2"

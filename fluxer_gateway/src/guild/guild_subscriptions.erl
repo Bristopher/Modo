@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(guild_subscriptions).
+-typing([eqwalizer]).
 
 -export([
     init_state/0,
@@ -35,6 +21,7 @@
 -type session_id() :: binary().
 -type user_id() :: integer().
 -type subscription_state() :: #{user_id() => sets:set(session_id())}.
+-export_type([session_id/0, user_id/0, subscription_state/0]).
 
 -spec init_state() -> subscription_state().
 init_state() -> #{}.
@@ -43,7 +30,7 @@ init_state() -> #{}.
 subscribe(SessionId, UserId, State) ->
     Subscribers = maps:get(UserId, State, sets:new()),
     NewSubscribers = sets:add_element(SessionId, Subscribers),
-    maps:put(UserId, NewSubscribers, State).
+    State#{UserId => NewSubscribers}.
 
 -spec unsubscribe(session_id(), user_id(), subscription_state()) -> subscription_state().
 unsubscribe(SessionId, UserId, State) ->
@@ -51,26 +38,40 @@ unsubscribe(SessionId, UserId, State) ->
         undefined ->
             State;
         Subscribers ->
-            NewSubscribers = sets:del_element(SessionId, Subscribers),
-            case sets:size(NewSubscribers) of
-                0 -> maps:remove(UserId, State);
-                _ -> maps:put(UserId, NewSubscribers, State)
-            end
+            remove_session_subscriber(UserId, SessionId, Subscribers, State)
+    end.
+
+-spec remove_session_subscriber(
+    user_id(), session_id(), sets:set(session_id()), subscription_state()
+) ->
+    subscription_state().
+remove_session_subscriber(UserId, SessionId, Subscribers, State) ->
+    NewSubscribers = sets:del_element(SessionId, Subscribers),
+    case sets:size(NewSubscribers) of
+        0 -> maps:remove(UserId, State);
+        _ -> State#{UserId => NewSubscribers}
     end.
 
 -spec unsubscribe_session(session_id(), subscription_state()) -> subscription_state().
 unsubscribe_session(SessionId, State) ->
     maps:fold(
         fun(UserId, Subscribers, Acc) ->
-            NewSubscribers = sets:del_element(SessionId, Subscribers),
-            case sets:size(NewSubscribers) of
-                0 -> Acc;
-                _ -> maps:put(UserId, NewSubscribers, Acc)
-            end
+            remove_session_from_subs(UserId, SessionId, Subscribers, Acc)
         end,
         #{},
         State
     ).
+
+-spec remove_session_from_subs(
+    user_id(), session_id(), sets:set(session_id()), subscription_state()
+) ->
+    subscription_state().
+remove_session_from_subs(UserId, SessionId, Subscribers, Acc) ->
+    NewSubscribers = sets:del_element(SessionId, Subscribers),
+    case sets:size(NewSubscribers) of
+        0 -> Acc;
+        _ -> Acc#{UserId => NewSubscribers}
+    end.
 
 -spec update_subscriptions(session_id(), [user_id()], subscription_state()) ->
     subscription_state().
@@ -112,14 +113,20 @@ is_subscribed(SessionId, UserId, State) ->
 get_user_ids_for_session(SessionId, State) ->
     maps:fold(
         fun(UserId, Subscribers, Acc) ->
-            case sets:is_element(SessionId, Subscribers) of
-                true -> sets:add_element(UserId, Acc);
-                false -> Acc
-            end
+            collect_user_for_session(UserId, SessionId, Subscribers, Acc)
         end,
         sets:new(),
         State
     ).
+
+-spec collect_user_for_session(
+    user_id(), session_id(), sets:set(session_id()), sets:set(user_id())
+) -> sets:set(user_id()).
+collect_user_for_session(UserId, SessionId, Subscribers, Acc) ->
+    case sets:is_element(SessionId, Subscribers) of
+        true -> sets:add_element(UserId, Acc);
+        false -> Acc
+    end.
 
 -ifdef(TEST).
 

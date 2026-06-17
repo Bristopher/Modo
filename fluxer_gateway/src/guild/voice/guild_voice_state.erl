@@ -1,34 +1,24 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(guild_voice_state).
+-typing([eqwalizer]).
 
 -include_lib("fluxer_gateway/include/voice_state.hrl").
 
 -export([get_voice_state/2]).
 -export([get_voice_states_list/1]).
--export([update_voice_state_data/9]).
+-export([update_voice_state_data/1]).
 -export([user_matches_voice_state/2]).
--export([create_voice_state/8]).
+-export([create_voice_state/2, create_voice_state/8]).
 -export([extract_session_info_from_voice_state/2]).
+-export([has_voice_state_change/2]).
 
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
--endif.
+-export_type([
+    guild_state/0,
+    voice_state/0,
+    voice_state_map/0,
+    voice_flags/0
+]).
 
 -type guild_state() :: map().
 -type voice_state() :: map().
@@ -42,123 +32,238 @@ get_voice_state(Request, State) ->
         ConnectionId ->
             VoiceStates = voice_state_utils:voice_states(State),
             VoiceState = maps:get(ConnectionId, VoiceStates, null),
-            {reply, #{voice_state => VoiceState}, State}
+            {reply, #{voice_state => external_or_null(VoiceState)}, State}
     end.
+
+-spec external_or_null(voice_state() | null) -> voice_state() | null.
+external_or_null(null) -> null;
+external_or_null(VoiceState) -> voice_state_utils:external_voice_state(VoiceState).
 
 -spec get_voice_states_list(guild_state()) -> [voice_state()].
 get_voice_states_list(State) ->
     maps:values(voice_state_utils:voice_states(State)).
 
 -spec update_voice_state_data(
+    map()
+) -> {reply, map(), guild_state()}.
+update_voice_state_data(
+    #{
+        connection_id := ConnectionId,
+        channel_id := ChannelIdBin,
+        flags := Flags,
+        member := Member,
+        existing_voice_state := ExistingVoiceState,
+        voice_states := VoiceStates,
+        state := State,
+        needs_token := NeedsToken,
+        viewer_stream_keys := ViewerStreamKeys
+    }
+) ->
+    Resolved = resolve_voice_fields(
+        Flags, Member, ExistingVoiceState, ChannelIdBin, ViewerStreamKeys
+    ),
+    case Resolved of
+        #{has_change := false} ->
+            {reply,
+                #{
+                    success => true,
+                    voice_state => voice_state_utils:external_voice_state(ExistingVoiceState)
+                },
+                State};
+        #{has_change := true} = R ->
+            apply_voice_state_change(
+                ConnectionId,
+                ChannelIdBin,
+                ExistingVoiceState,
+                VoiceStates,
+                State,
+                NeedsToken,
+                R
+            )
+    end.
+
+-spec resolve_voice_fields(voice_flags(), map(), voice_state(), binary(), list()) -> map().
+resolve_voice_fields(Flags, Member, ExistingVoiceState, ChannelIdBin, ViewerStreamKeys) ->
+    ServerMute = maps:get(<<"mute">>, Member, false),
+    ServerDeaf = maps:get(<<"deaf">>, Member, false),
+    Fields = #{
+        server_mute => ServerMute,
+        server_deaf => ServerDeaf,
+        self_mute => maps:get(self_mute, Flags),
+        self_deaf => maps:get(self_deaf, Flags),
+        self_video => maps:get(self_video, Flags),
+        self_stream => maps:get(self_stream, Flags),
+        is_mobile => maps:get(is_mobile, Flags),
+        suppress => maps:get(suppress, Flags),
+        channel_id => ChannelIdBin,
+        viewer_stream_keys => ViewerStreamKeys
+    },
+    Fields#{
+        member => Member,
+        has_change => has_voice_state_change(ExistingVoiceState, Fields)
+    }.
+
+-spec apply_voice_state_change(
     binary(),
     binary(),
-    voice_flags(),
-    map(),
     voice_state(),
     voice_state_map(),
     guild_state(),
     boolean(),
-    list()
+    map()
 ) -> {reply, map(), guild_state()}.
-update_voice_state_data(
+apply_voice_state_change(
     ConnectionId,
     ChannelIdBin,
-    Flags,
-    Member,
     ExistingVoiceState,
     VoiceStates,
     State,
     NeedsToken,
-    ViewerStreamKeys
+    R
 ) ->
-    #{
-        self_mute := SelfMute,
-        self_deaf := SelfDeaf,
-        self_video := SelfVideo,
-        self_stream := SelfStream,
-        is_mobile := IsMobile
-    } = Flags,
-    ServerMute = maps:get(<<"mute">>, Member, false),
-    ServerDeaf = maps:get(<<"deaf">>, Member, false),
     OldChannelIdBin = maps:get(<<"channel_id">>, ExistingVoiceState, null),
-    IsChannelChange = OldChannelIdBin =/= ChannelIdBin,
-    HasStateChange = has_voice_state_change(
-        ExistingVoiceState, ChannelIdBin, ServerMute, ServerDeaf,
-        SelfMute, SelfDeaf, SelfVideo, SelfStream, IsMobile, ViewerStreamKeys
+    UpdatedVoiceState = build_updated_voice_state(ExistingVoiceState, ChannelIdBin, R),
+    NewVoiceStates = VoiceStates#{ConnectionId => UpdatedVoiceState},
+    NewState = State#{voice_states => NewVoiceStates},
+    broadcast_voice_change(
+        OldChannelIdBin,
+        ChannelIdBin,
+        ExistingVoiceState,
+        UpdatedVoiceState,
+        ConnectionId,
+        NewState
     ),
-    case HasStateChange of
-        false ->
-            Reply = #{success => true, voice_state => ExistingVoiceState},
-            {reply, Reply, State};
-        true ->
-            OldVersion = maps:get(<<"version">>, ExistingVoiceState, 0),
-            UpdatedVoiceState = ExistingVoiceState#{
-                <<"channel_id">> => ChannelIdBin,
-                <<"mute">> => ServerMute,
-                <<"deaf">> => ServerDeaf,
-                <<"self_mute">> => SelfMute,
-                <<"self_deaf">> => SelfDeaf,
-                <<"self_video">> => SelfVideo,
-                <<"self_stream">> => SelfStream,
-                <<"is_mobile">> => IsMobile,
-                <<"viewer_stream_keys">> => ViewerStreamKeys,
-                <<"version">> => OldVersion + 1
-            },
-            NewVoiceStates = maps:put(ConnectionId, UpdatedVoiceState, VoiceStates),
-            NewState = maps:put(voice_states, NewVoiceStates, State),
-            case IsChannelChange of
-                true ->
-                    DisconnectState = ExistingVoiceState#{
-                        <<"channel_id">> => null,
-                        <<"connection_id">> => ConnectionId
-                    },
-                    guild_voice_broadcast:broadcast_voice_state_update(
-                        DisconnectState, NewState, OldChannelIdBin
-                    ),
-                    guild_voice_broadcast:broadcast_voice_state_update(
-                        UpdatedVoiceState, NewState, ChannelIdBin
-                    );
-                false ->
-                    guild_voice_broadcast:broadcast_voice_state_update(
-                        UpdatedVoiceState, NewState, ChannelIdBin
-                    )
-            end,
-            Reply =
-                case NeedsToken of
-                    true -> #{success => true, voice_state => UpdatedVoiceState, needs_token => true};
-                    false -> #{success => true, voice_state => UpdatedVoiceState}
-                end,
-            {reply, Reply, NewState}
-    end.
+    Reply = build_update_reply(UpdatedVoiceState, NeedsToken),
+    {reply, Reply, NewState}.
 
--spec has_voice_state_change(
-    voice_state(), binary(), boolean(), boolean(),
-    boolean(), boolean(), boolean(), boolean(), boolean(), term()
-) -> boolean().
-has_voice_state_change(
-    ExistingVoiceState, ChannelIdBin, ServerMute, ServerDeaf,
-    SelfMute, SelfDeaf, SelfVideo, SelfStream, IsMobile, ViewerStreamKeys
+-spec build_updated_voice_state(voice_state(), binary(), map()) -> voice_state().
+build_updated_voice_state(ExistingVoiceState, ChannelIdBin, R) ->
+    OldVersion = voice_state_utils:voice_state_version(ExistingVoiceState),
+    Updated = ExistingVoiceState#{
+        <<"channel_id">> => ChannelIdBin,
+        <<"mute">> => maps:get(server_mute, R),
+        <<"deaf">> => maps:get(server_deaf, R),
+        <<"self_mute">> => maps:get(self_mute, R),
+        <<"self_deaf">> => maps:get(self_deaf, R),
+        <<"self_video">> => maps:get(self_video, R),
+        <<"self_stream">> => maps:get(self_stream, R),
+        <<"is_mobile">> => maps:get(is_mobile, R),
+        <<"suppress">> => maps:get(suppress, R),
+        <<"viewer_stream_keys">> => maps:get(viewer_stream_keys, R),
+        <<"version">> => OldVersion + 1
+    },
+    voice_state_utils:complete_voice_state(refresh_member(Updated, maps:get(member, R, #{}))).
+
+-spec refresh_member(voice_state(), map()) -> voice_state().
+refresh_member(VoiceState, Member) when is_map(Member), map_size(Member) > 0 ->
+    VoiceState#{<<"member">> => Member};
+refresh_member(VoiceState, _Member) ->
+    VoiceState.
+
+-spec broadcast_voice_change(
+    binary() | null, binary(), voice_state(), voice_state(), binary(), guild_state()
+) -> ok.
+broadcast_voice_change(
+    OldChannelIdBin,
+    ChannelIdBin,
+    ExistingVoiceState,
+    UpdatedVoiceState,
+    ConnectionId,
+    NewState
 ) ->
-    maps:get(<<"channel_id">>, ExistingVoiceState, null) =/= ChannelIdBin orelse
-    maps:get(<<"mute">>, ExistingVoiceState, false) =/= ServerMute orelse
-    maps:get(<<"deaf">>, ExistingVoiceState, false) =/= ServerDeaf orelse
-    maps:get(<<"self_mute">>, ExistingVoiceState, false) =/= SelfMute orelse
-    maps:get(<<"self_deaf">>, ExistingVoiceState, false) =/= SelfDeaf orelse
-    maps:get(<<"self_video">>, ExistingVoiceState, false) =/= SelfVideo orelse
-    maps:get(<<"self_stream">>, ExistingVoiceState, false) =/= SelfStream orelse
-    maps:get(<<"is_mobile">>, ExistingVoiceState, false) =/= IsMobile orelse
-    maps:get(<<"viewer_stream_keys">>, ExistingVoiceState, []) =/= ViewerStreamKeys.
+    case OldChannelIdBin =/= ChannelIdBin of
+        true ->
+            DisconnectState = ExistingVoiceState#{
+                <<"channel_id">> => null, <<"connection_id">> => ConnectionId
+            },
+            guild_voice_broadcast:broadcast_voice_state_update(
+                DisconnectState, NewState, OldChannelIdBin
+            ),
+            guild_voice_broadcast:broadcast_voice_state_update(
+                UpdatedVoiceState, NewState, ChannelIdBin
+            );
+        false ->
+            guild_voice_broadcast:broadcast_voice_state_update(
+                UpdatedVoiceState, NewState, ChannelIdBin
+            )
+    end,
+    ok.
 
--spec user_matches_voice_state(voice_state(), integer() | binary()) -> boolean().
-user_matches_voice_state(VoiceState, UserId) when is_integer(UserId) ->
-    case map_utils:get_integer(VoiceState, <<"user_id">>, undefined) of
+-spec build_update_reply(voice_state(), boolean()) -> map().
+build_update_reply(UpdatedVoiceState, true) ->
+    #{
+        success => true,
+        voice_state => voice_state_utils:external_voice_state(UpdatedVoiceState),
+        needs_token => true
+    };
+build_update_reply(UpdatedVoiceState, false) ->
+    #{
+        success => true,
+        voice_state => voice_state_utils:external_voice_state(UpdatedVoiceState)
+    }.
+
+-spec has_voice_state_change(voice_state(), map()) -> boolean().
+has_voice_state_change(ExistingVoiceState, Fields) ->
+    lists:any(
+        fun({VoiceKey, FieldKey, Default}) ->
+            maps:get(VoiceKey, ExistingVoiceState, Default) =/= maps:get(FieldKey, Fields)
+        end,
+        voice_state_change_fields()
+    ).
+
+-spec voice_state_change_fields() -> [{binary(), atom(), term()}].
+voice_state_change_fields() ->
+    [
+        {<<"channel_id">>, channel_id, null},
+        {<<"mute">>, server_mute, false},
+        {<<"deaf">>, server_deaf, false},
+        {<<"self_mute">>, self_mute, false},
+        {<<"self_deaf">>, self_deaf, false},
+        {<<"self_video">>, self_video, false},
+        {<<"self_stream">>, self_stream, false},
+        {<<"is_mobile">>, is_mobile, false},
+        {<<"suppress">>, suppress, false},
+        {<<"viewer_stream_keys">>, viewer_stream_keys, []}
+    ].
+
+-spec user_matches_voice_state(voice_state(), term()) -> boolean().
+user_matches_voice_state(VoiceState, UserId) when is_integer(UserId), UserId > 0 ->
+    case voice_state_utils:voice_state_user_id(VoiceState) of
         undefined -> false;
         VoiceUserId -> VoiceUserId =:= UserId
     end;
 user_matches_voice_state(VoiceState, UserId) when is_binary(UserId) ->
-    type_conv:to_binary(map_utils:get_binary(VoiceState, <<"user_id">>, undefined)) =:= UserId;
+    user_matches_normalized_voice_state(VoiceState, snowflake_id:parse(UserId));
+user_matches_voice_state(VoiceState, UserId) when is_list(UserId) ->
+    user_matches_normalized_voice_state(VoiceState, snowflake_id:parse(UserId));
 user_matches_voice_state(_VoiceState, _UserId) ->
     false.
+
+-spec user_matches_normalized_voice_state(voice_state(), term()) -> boolean().
+user_matches_normalized_voice_state(VoiceState, UserIdInt) ->
+    case UserIdInt of
+        UserIdInt when is_integer(UserIdInt), UserIdInt > 0 ->
+            user_matches_voice_state(VoiceState, UserIdInt);
+        _ ->
+            false
+    end.
+
+-spec create_voice_state(
+    map(),
+    voice_flags()
+) -> voice_state().
+create_voice_state(Fields, Flags) ->
+    Base = base_voice_state(
+        maps:get(guild_id, Fields),
+        maps:get(channel_id, Fields),
+        maps:get(user_id, Fields),
+        maps:get(connection_id, Fields),
+        maps:get(server_mute, Fields),
+        maps:get(server_deaf, Fields),
+        maps:get(viewer_stream_keys, Fields),
+        maps:get(e2ee_capable, Fields, false)
+    ),
+    voice_state_utils:complete_voice_state(apply_voice_flags(Base, Flags)).
 
 -spec create_voice_state(
     binary(),
@@ -180,13 +285,40 @@ create_voice_state(
     Flags,
     ViewerStreamKeys
 ) ->
-    #{
-        self_mute := SelfMute,
-        self_deaf := SelfDeaf,
-        self_video := SelfVideo,
-        self_stream := SelfStream,
-        is_mobile := IsMobile
-    } = Flags,
+    create_voice_state(
+        #{
+            guild_id => GuildIdBin,
+            channel_id => ChannelIdBin,
+            user_id => UserIdBin,
+            connection_id => ConnectionId,
+            server_mute => ServerMute,
+            server_deaf => ServerDeaf,
+            viewer_stream_keys => ViewerStreamKeys,
+            e2ee_capable => false
+        },
+        Flags
+    ).
+
+-spec base_voice_state(
+    binary(),
+    binary(),
+    binary(),
+    binary(),
+    boolean(),
+    boolean(),
+    list(),
+    boolean()
+) -> voice_state().
+base_voice_state(
+    GuildIdBin,
+    ChannelIdBin,
+    UserIdBin,
+    ConnectionId,
+    ServerMute,
+    ServerDeaf,
+    ViewerStreamKeys,
+    E2EECapable
+) ->
     #{
         <<"guild_id">> => GuildIdBin,
         <<"channel_id">> => ChannelIdBin,
@@ -194,13 +326,28 @@ create_voice_state(
         <<"connection_id">> => ConnectionId,
         <<"mute">> => ServerMute,
         <<"deaf">> => ServerDeaf,
-        <<"self_mute">> => SelfMute,
-        <<"self_deaf">> => SelfDeaf,
-        <<"self_video">> => SelfVideo,
-        <<"self_stream">> => SelfStream,
-        <<"is_mobile">> => IsMobile,
         <<"viewer_stream_keys">> => ViewerStreamKeys,
-        <<"version">> => 0
+        <<"e2ee_capable">> => E2EECapable,
+        <<"version">> => voice_state_utils:initial_voice_state_version()
+    }.
+
+-spec apply_voice_flags(voice_state(), voice_flags()) -> voice_state().
+apply_voice_flags(State, Flags) ->
+    #{
+        self_mute := SM,
+        self_deaf := SD,
+        self_video := SV,
+        self_stream := SS,
+        is_mobile := IM,
+        suppress := Sup
+    } = Flags,
+    State#{
+        <<"self_mute">> => SM,
+        <<"self_deaf">> => SD,
+        <<"self_video">> => SV,
+        <<"self_stream">> => SS,
+        <<"is_mobile">> => IM,
+        <<"suppress">> => Sup
     }.
 
 -spec extract_session_info_from_voice_state(binary(), voice_state()) -> map().
@@ -213,148 +360,16 @@ extract_session_info_from_voice_state(ConnId, VoiceState) ->
         self_video => maps:get(<<"self_video">>, VoiceState, false),
         self_stream => maps:get(<<"self_stream">>, VoiceState, false),
         is_mobile => maps:get(<<"is_mobile">>, VoiceState, false),
-        member => maps:get(<<"member">>, VoiceState, #{})
+        suppress => maps:get(<<"suppress">>, VoiceState, false),
+        e2ee_capable => maps:get(<<"e2ee_capable">>, VoiceState, false),
+        latitude => maps:get(<<"latitude">>, VoiceState, undefined),
+        longitude => maps:get(<<"longitude">>, VoiceState, undefined),
+        member => member_or_empty(VoiceState)
     }.
 
--ifdef(TEST).
-
-user_matches_voice_state_integer_test() ->
-    VoiceState = #{<<"user_id">> => <<"10">>},
-    ?assert(user_matches_voice_state(VoiceState, 10)),
-    ?assertNot(user_matches_voice_state(VoiceState, 11)).
-
-user_matches_voice_state_binary_test() ->
-    VoiceState = #{<<"user_id">> => <<"123">>},
-    ?assert(user_matches_voice_state(VoiceState, <<"123">>)),
-    ?assertNot(user_matches_voice_state(VoiceState, <<"456">>)).
-
-user_matches_voice_state_undefined_test() ->
-    VoiceState = #{},
-    ?assertNot(user_matches_voice_state(VoiceState, 10)).
-
-create_voice_state_test() ->
-    Flags = #{
-        self_mute => true,
-        self_deaf => false,
-        self_video => true,
-        self_stream => false,
-        is_mobile => true
-    },
-    VS = create_voice_state(
-        <<"1">>, <<"2">>, <<"3">>, <<"conn">>, false, false, Flags, []
-    ),
-    ?assertEqual(<<"1">>, maps:get(<<"guild_id">>, VS)),
-    ?assertEqual(<<"2">>, maps:get(<<"channel_id">>, VS)),
-    ?assertEqual(<<"3">>, maps:get(<<"user_id">>, VS)),
-    ?assertEqual(<<"conn">>, maps:get(<<"connection_id">>, VS)),
-    ?assertEqual(true, maps:get(<<"self_mute">>, VS)),
-    ?assertEqual(false, maps:get(<<"self_deaf">>, VS)),
-    ?assertEqual(true, maps:get(<<"self_video">>, VS)),
-    ?assertEqual(false, maps:get(<<"self_stream">>, VS)),
-    ?assertEqual(true, maps:get(<<"is_mobile">>, VS)),
-    ?assertEqual(0, maps:get(<<"version">>, VS)).
-
-extract_session_info_from_voice_state_test() ->
-    VoiceState = #{
-        <<"session_id">> => <<"sess">>,
-        <<"self_mute">> => true,
-        <<"self_deaf">> => false,
-        <<"self_video">> => true,
-        <<"self_stream">> => false,
-        <<"is_mobile">> => true,
-        <<"member">> => #{<<"id">> => <<"m">>}
-    },
-    Info = extract_session_info_from_voice_state(<<"conn">>, VoiceState),
-    ?assertEqual(<<"conn">>, maps:get(connection_id, Info)),
-    ?assertEqual(<<"sess">>, maps:get(session_id, Info)),
-    ?assertEqual(true, maps:get(self_mute, Info)),
-    ?assertEqual(#{<<"id">> => <<"m">>}, maps:get(member, Info)).
-
-has_voice_state_change_no_change_test() ->
-    ExistingVoiceState = #{
-        <<"channel_id">> => <<"100">>,
-        <<"mute">> => false,
-        <<"deaf">> => false,
-        <<"self_mute">> => true,
-        <<"self_deaf">> => false,
-        <<"self_video">> => false,
-        <<"self_stream">> => false,
-        <<"is_mobile">> => false,
-        <<"viewer_stream_keys">> => []
-    },
-    ?assertNot(has_voice_state_change(
-        ExistingVoiceState, <<"100">>, false, false, true, false, false, false, false, []
-    )).
-
-has_voice_state_change_channel_change_test() ->
-    ExistingVoiceState = #{
-        <<"channel_id">> => <<"100">>,
-        <<"mute">> => false,
-        <<"deaf">> => false,
-        <<"self_mute">> => false,
-        <<"self_deaf">> => false,
-        <<"self_video">> => false,
-        <<"self_stream">> => false,
-        <<"is_mobile">> => false,
-        <<"viewer_stream_keys">> => []
-    },
-    ?assert(has_voice_state_change(
-        ExistingVoiceState, <<"200">>, false, false, false, false, false, false, false, []
-    )).
-
-has_voice_state_change_self_mute_change_test() ->
-    ExistingVoiceState = #{
-        <<"channel_id">> => <<"100">>,
-        <<"mute">> => false,
-        <<"deaf">> => false,
-        <<"self_mute">> => false,
-        <<"self_deaf">> => false,
-        <<"self_video">> => false,
-        <<"self_stream">> => false,
-        <<"is_mobile">> => false,
-        <<"viewer_stream_keys">> => []
-    },
-    ?assert(has_voice_state_change(
-        ExistingVoiceState, <<"100">>, false, false, true, false, false, false, false, []
-    )).
-
-has_voice_state_change_server_mute_change_test() ->
-    ExistingVoiceState = #{
-        <<"channel_id">> => <<"100">>,
-        <<"mute">> => false,
-        <<"deaf">> => false,
-        <<"self_mute">> => false,
-        <<"self_deaf">> => false,
-        <<"self_video">> => false,
-        <<"self_stream">> => false,
-        <<"is_mobile">> => false,
-        <<"viewer_stream_keys">> => []
-    },
-    ?assert(has_voice_state_change(
-        ExistingVoiceState, <<"100">>, true, false, false, false, false, false, false, []
-    )).
-
-has_voice_state_change_viewer_stream_keys_change_test() ->
-    ExistingVoiceState = #{
-        <<"channel_id">> => <<"100">>,
-        <<"mute">> => false,
-        <<"deaf">> => false,
-        <<"self_mute">> => false,
-        <<"self_deaf">> => false,
-        <<"self_video">> => false,
-        <<"self_stream">> => false,
-        <<"is_mobile">> => false,
-        <<"viewer_stream_keys">> => []
-    },
-    ?assert(has_voice_state_change(
-        ExistingVoiceState, <<"100">>, false, false, false, false, false, false, false,
-        [<<"999:100:conn">>]
-    )).
-
-has_voice_state_change_defaults_test() ->
-    ExistingVoiceState = #{},
-    ?assertNot(has_voice_state_change(
-        ExistingVoiceState, null, false, false, false, false, false, false, false, []
-    )).
-
--endif.
+-spec member_or_empty(voice_state()) -> map().
+member_or_empty(VoiceState) ->
+    case maps:get(<<"member">>, VoiceState, #{}) of
+        Member when is_map(Member) -> Member;
+        _ -> #{}
+    end.

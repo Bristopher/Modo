@@ -1,34 +1,16 @@
-/*
- * Copyright (C) 2026 Fluxer Contributors
- *
- * This file is part of Fluxer.
- *
- * Fluxer is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Fluxer is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
- */
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 import {sources} from '@rspack/core';
 
-function normalizeEndpoint(staticCdnEndpoint) {
-	// Self-host patch: fall back to the public CDN so the PWA manifest icons resolve
-	// even when no static_cdn endpoint is configured for the instance.
-	if (!staticCdnEndpoint) return 'https://fluxerstatic.com';
-	return staticCdnEndpoint.endsWith('/') ? staticCdnEndpoint.slice(0, -1) : staticCdnEndpoint;
+const STATIC_CDN_ENDPOINT_PLACEHOLDER = '{{STATIC_CDN_ENDPOINT}}';
+
+function resolveStaticCdnEndpoint(staticCdnEndpoint) {
+	const value = staticCdnEndpoint?.trim().replace(/\/+$/, '');
+	return value || STATIC_CDN_ENDPOINT_PLACEHOLDER;
 }
 
-function generateManifest(staticCdnEndpointRaw) {
-	const staticCdnEndpoint = normalizeEndpoint(staticCdnEndpointRaw);
-
+function generateManifest(staticCdnEndpoint) {
+	const cdn = resolveStaticCdnEndpoint(staticCdnEndpoint);
 	const manifest = {
 		name: 'Fluxer',
 		short_name: 'Fluxer',
@@ -44,29 +26,29 @@ function generateManifest(staticCdnEndpointRaw) {
 		scope: '/',
 		icons: [
 			{
-				src: `${staticCdnEndpoint}/web/android-chrome-192x192.png`,
+				src: `${cdn}/web/android-chrome-192x192.png`,
 				sizes: '192x192',
 				type: 'image/png',
 				purpose: 'maskable any',
 			},
 			{
-				src: `${staticCdnEndpoint}/web/android-chrome-512x512.png`,
+				src: `${cdn}/web/android-chrome-512x512.png`,
 				sizes: '512x512',
 				type: 'image/png',
 				purpose: 'maskable any',
 			},
 			{
-				src: `${staticCdnEndpoint}/web/apple-touch-icon.png`,
+				src: `${cdn}/web/apple-touch-icon.png`,
 				sizes: '180x180',
 				type: 'image/png',
 			},
 			{
-				src: `${staticCdnEndpoint}/web/favicon-32x32.png`,
+				src: `${cdn}/web/favicon-32x32.png`,
 				sizes: '32x32',
 				type: 'image/png',
 			},
 			{
-				src: `${staticCdnEndpoint}/web/favicon-16x16.png`,
+				src: `${cdn}/web/favicon-16x16.png`,
 				sizes: '16x16',
 				type: 'image/png',
 			},
@@ -76,14 +58,13 @@ function generateManifest(staticCdnEndpointRaw) {
 	return JSON.stringify(manifest, null, 2);
 }
 
-function generateBrowserConfig(staticCdnEndpointRaw) {
-	const staticCdnEndpoint = normalizeEndpoint(staticCdnEndpointRaw);
-
+function generateBrowserConfig(staticCdnEndpoint) {
+	const cdn = resolveStaticCdnEndpoint(staticCdnEndpoint);
 	return `<?xml version="1.0" encoding="utf-8"?>
 <browserconfig>
   <msapplication>
     <tile>
-      <square150x150logo src="${staticCdnEndpoint}/web/mstile-150x150.png"/>
+      <square150x150logo src="${cdn}/web/mstile-150x150.png"/>
       <TileColor>#4641D9</TileColor>
     </tile>
   </msapplication>
@@ -95,8 +76,8 @@ function generateRobotsTxt() {
 }
 
 export class StaticFilesPlugin {
-	constructor(options) {
-		this.staticCdnEndpoint = options?.staticCdnEndpoint ?? '';
+	constructor(options = {}) {
+		this.staticCdnEndpoint = options.staticCdnEndpoint;
 	}
 
 	apply(compiler) {

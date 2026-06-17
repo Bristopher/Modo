@@ -1,0 +1,34 @@
+{
+	"name": "@fluxer/mac-screen-capture",
+	"version": "0.0.0",
+	"description": "",
+	"private": true,
+	"license": "AGPL-3.0-or-later",
+	"os": [
+		"darwin"
+	],
+	"cpu": [
+		"x64",
+		"arm64"
+	],
+	"main": "index.js",
+	"types": "index.d.ts",
+	"files": [
+		"index.js",
+		"index.d.ts",
+		"loader-diagnostics.cjs",
+		"mac-screen-capture.darwin-x64.node",
+		"mac-screen-capture.darwin-arm64.node"
+	],
+	"scripts": {
+		"build": "cargo run --locked --quiet --manifest-path ../../../tools/ci/Cargo.toml -- build-desktop-native-addon",
+		"test": "pnpm test:cargo && node --test index.test.mjs",
+		"test:cargo": "cargo test --manifest-path Cargo.toml"
+	},
+	"binary": {
+		"napi_versions": [
+			8
+		]
+	},
+	"devDependencies": {}
+}

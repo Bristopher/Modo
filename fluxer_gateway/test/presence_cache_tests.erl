@@ -1,0 +1,305 @@
+%% SPDX-License-Identifier: AGPL-3.0-or-later
+
+-module(presence_cache_tests).
+-typing([eqwalizer]).
+
+-include_lib("eunit/include/eunit.hrl").
+
+-define(TEST_PENDING_CAP, 10000).
+
+put_and_get_visible_status_test() ->
+    {ok, Pid} = maybe_start_for_test(),
+    Presence = #{<<"status">> => <<"online">>},
+    ?assertEqual(ok, presence_cache:put(1, Presence)),
+    _ = sys:get_state(Pid),
+    ?assertMatch({ok, _}, presence_cache:get(1)),
+    ?assertEqual(ok, gen_server:stop(Pid)).
+
+put_offline_evicted_test() ->
+    {ok, Pid} = maybe_start_for_test(),
+    Presence = #{<<"status">> => <<"offline">>},
+    ?assertEqual(ok, presence_cache:put(2, Presence)),
+    _ = sys:get_state(Pid),
+    ?assertEqual(not_found, presence_cache:get(2)),
+    ?assertEqual(ok, gen_server:stop(Pid)).
+
+bulk_get_across_shards_test() ->
+    {ok, Pid} = maybe_start_for_test(),
+    Visible = #{<<"status">> => <<"online">>, <<"user">> => #{<<"id">> => <<"3">>}},
+    presence_cache:put(3, Visible),
+    presence_cache:put(4, Visible),
+    _ = sys:get_state(Pid),
+    Results = presence_cache:bulk_get([3, 4, 3]),
+    ?assertEqual(2, length(Results)),
+    ?assertEqual(ok, gen_server:stop(Pid)).
+
+select_shard_test() ->
+    ?assert(presence_cache_bulk:select_shard(100, 4) >= 0),
+    ?assert(presence_cache_bulk:select_shard(100, 4) < 4).
+
+find_shard_by_ref_test() ->
+    Ref1 = make_ref(),
+    Shards = #{0 => #{pid => self(), ref => Ref1}},
+    ?assertEqual({ok, 0}, presence_cache_shards:find_by_ref(Ref1, Shards)),
+    ?assertEqual(not_found, presence_cache_shards:find_by_ref(make_ref(), Shards)).
+
+put_pending_operation_overwrites_test() ->
+    Pending0 = #{100 => delete},
+    Pending1 = Pending0#{100 => {put, #{<<"status">> => <<"online">>}}},
+    ?assertEqual({put, #{<<"status">> => <<"online">>}}, maps:get(100, Pending1)).
+
+merge_rebalance_operations_prefers_pending_test() ->
+    Snapshot = #{42 => #{<<"status">> => <<"online">>}},
+    SnapshotOps = #{42 => {put, #{<<"status">> => <<"online">>}}},
+    Pending = #{42 => delete, 43 => {put, #{<<"status">> => <<"idle">>}}},
+    Operations = maps:merge(
+        SnapshotOps, presence_cache_rebalance:sanitize_pending_operations(Pending)
+    ),
+    ?assertEqual(delete, maps:get(42, Operations)),
+    ?assertEqual({put, #{<<"status">> => <<"idle">>}}, maps:get(43, Operations)),
+    _ = Snapshot.
+
+sanitize_pending_operations_filters_invalid_entries_test() ->
+    Pending = #{
+        1 => delete,
+        2 => {put, #{}},
+        -3 => delete,
+        4 => {put, not_a_map},
+        bad_key => delete
+    },
+    ?assertEqual(
+        #{1 => delete, 2 => {put, #{}}},
+        presence_cache_rebalance:sanitize_pending_operations(Pending)
+    ).
+
+nodedown_grace_period_preserves_entries_test() ->
+    {ok, Pid} = maybe_start_for_test(),
+    Presence = #{<<"status">> => <<"online">>},
+    ?assertEqual(ok, presence_cache:put(100, Presence)),
+    _ = sys:get_state(Pid),
+    gen_server:cast(presence_cache, {nodedown_grace, 'lost@node'}),
+    timer:sleep(50),
+    ?assertMatch({ok, _}, presence_cache:get(100)),
+    ?assertEqual(ok, gen_server:stop(Pid)).
+
+nodeup_cancels_grace_period_test() ->
+    {ok, Pid} = maybe_start_for_test(),
+    gen_server:cast(presence_cache, {nodedown_grace, 'lost@node'}),
+    timer:sleep(50),
+    gen_server:cast(presence_cache, {nodeup_cancel_grace, 'lost@node'}),
+    timer:sleep(50),
+    ?assertEqual(ok, gen_server:stop(Pid)).
+
+anti_entropy_no_op_when_in_sync_test() ->
+    {ok, Pid} = maybe_start_for_test(),
+    State = cache_state(sys:get_state(Pid)),
+    Gen = maps:get(generation, State, 0),
+    {noreply, State1} = presence_cache_rebalance:handle_anti_entropy_request(
+        node(), Gen, State
+    ),
+    ?assertEqual(Gen, maps:get(generation, State1, 0)),
+    ?assertEqual(ok, gen_server:stop(Pid)).
+
+generation_increments_on_write_test() ->
+    {ok, Pid} = maybe_start_for_test(),
+    Gen0 = presence_cache:generation(),
+    ?assertEqual(ok, presence_cache:put(200, #{<<"status">> => <<"online">>})),
+    _ = sys:get_state(Pid),
+    Gen1 = presence_cache:generation(),
+    ?assert(Gen1 > Gen0),
+    ?assertEqual(ok, gen_server:stop(Pid)).
+
+cap_pending_operations_enforces_limit_test() ->
+    Large = maps:from_list([{I, delete} || I <- lists:seq(1, 10500)]),
+    BaseState = #{pending_operations => Large, pending_retry_timer => undefined},
+    State1 = presence_cache_rebalance:ensure_pending_state(BaseState),
+    ?assertEqual(10000, maps:size(maps:get(pending_operations, State1))).
+
+cap_pending_operations_no_op_under_limit_test() ->
+    Small = #{1 => delete, 2 => {put, #{}}},
+    BaseState = #{pending_operations => Small, pending_retry_timer => undefined},
+    State1 = presence_cache_rebalance:ensure_pending_state(BaseState),
+    ?assertEqual(Small, maps:get(pending_operations, State1)).
+
+put_to_unreachable_remote_owner_queues_pending_operation_test() ->
+    RemoteNode = 'missing_presence@127.0.0.1',
+    Presence = #{<<"status">> => <<"online">>},
+    with_presence_members(RemoteNode, fun() ->
+        UserId = remote_owned_user_id(RemoteNode),
+        State1 = presence_cache_ops:handle_put(UserId, Presence, base_pending_state()),
+        try
+            ?assertEqual(
+                {put, Presence},
+                maps:get(UserId, maps:get(pending_operations, State1))
+            )
+        after
+            presence_cache_rebalance:cancel_pending_retry_timer(State1)
+        end
+    end).
+
+rebalance_keeps_pending_put_when_remote_owner_unreachable_test() ->
+    RemoteNode = 'missing_presence_rebalance@127.0.0.1',
+    with_presence_members(RemoteNode, fun() ->
+        with_presence_cache(fun(Pid) -> assert_rebalance_keeps_pending_put(RemoteNode, Pid) end)
+    end).
+
+handoff_to_unreachable_target_keeps_local_entry_test() ->
+    RemoteNode = 'missing_presence_handoff@127.0.0.1',
+    UserId = 33001,
+    Presence = #{
+        <<"status">> => <<"online">>,
+        <<"user">> => #{<<"id">> => integer_to_binary(UserId)}
+    },
+    with_presence_cache(fun(Pid) ->
+        State0 = cache_state(sys:get_state(Pid)),
+        {_Reply, State1} = presence_cache:put_local(UserId, Presence, State0),
+        State2 = presence_cache_rebalance:handoff_all_to_target(RemoteNode, State1),
+        ?assertMatch({{ok, Presence}, _}, presence_cache_ops:get_local(UserId, State2))
+    end).
+
+content_digest_changes_on_write_test() ->
+    with_presence_cache(fun(Pid) ->
+        State0 = cache_state(sys:get_state(Pid)),
+        Digest0 = presence_cache_shards:content_digest(State0),
+        Presence = #{
+            <<"status">> => <<"online">>,
+            <<"user">> => #{<<"id">> => <<"54001">>}
+        },
+        {_Reply, State1} = presence_cache:put_local(54001, Presence, State0),
+        Digest1 = presence_cache_shards:content_digest(State1),
+        ?assert(is_binary(Digest0)),
+        ?assertNotEqual(Digest0, Digest1)
+    end).
+
+anti_entropy_digest_request_noop_when_digests_match_test() ->
+    with_presence_cache(fun(Pid) ->
+        State = cache_state(sys:get_state(Pid)),
+        Digest = presence_cache_shards:content_digest(State),
+        {noreply, State1} = presence_cache_rebalance:handle_anti_entropy_digest_request(
+            node(), Digest, State
+        ),
+        ?assertEqual(State, State1)
+    end).
+
+rebalance_keeps_local_entry_when_remote_delete_unreachable_test() ->
+    RemoteNode = 'missing_presence_delete@127.0.0.1',
+    with_presence_members(RemoteNode, fun() ->
+        with_presence_cache(fun(Pid) ->
+            assert_rebalance_keeps_local_on_failed_delete(RemoteNode, Pid)
+        end)
+    end).
+
+assert_rebalance_keeps_local_on_failed_delete(RemoteNode, Pid) ->
+    UserId = remote_owned_user_id(RemoteNode),
+    Presence = #{
+        <<"status">> => <<"online">>,
+        <<"user">> => #{<<"id">> => integer_to_binary(UserId)}
+    },
+    State0 = cache_state(sys:get_state(Pid)),
+    {_Reply, State1} = presence_cache:put_local(UserId, Presence, State0),
+    State2 = presence_cache_rebalance:queue_pending_operation(UserId, delete, State1),
+    State3 = presence_cache_rebalance:rebalance_ownership(State2),
+    try
+        ?assertEqual(delete, maps:get(UserId, maps:get(pending_operations, State3))),
+        ?assertMatch({{ok, Presence}, _}, presence_cache_ops:get_local(UserId, State3))
+    after
+        presence_cache_rebalance:cancel_pending_retry_timer(State3)
+    end.
+
+evict_oldest_pending_drops_oldest_inserted_test() ->
+    State0 = #{
+        pending_operations => #{},
+        pending_seq => #{},
+        pending_seq_counter => 0,
+        pending_retry_timer => undefined
+    },
+    State1 = lists:foldl(
+        fun(UserId, AccState) ->
+            presence_cache_rebalance:queue_pending_operation(UserId, delete, AccState)
+        end,
+        State0,
+        lists:seq(1, ?TEST_PENDING_CAP + 5)
+    ),
+    try
+        Pending = maps:get(pending_operations, State1),
+        ?assertEqual(?TEST_PENDING_CAP, maps:size(Pending)),
+        ?assertNot(maps:is_key(1, Pending)),
+        ?assertNot(maps:is_key(5, Pending)),
+        ?assert(maps:is_key(?TEST_PENDING_CAP + 5, Pending))
+    after
+        presence_cache_rebalance:cancel_pending_retry_timer(State1)
+    end.
+
+maybe_start_for_test() ->
+    case whereis(presence_cache) of
+        undefined -> presence_cache:start_link();
+        Existing when is_pid(Existing) -> {ok, Existing}
+    end.
+
+base_pending_state() ->
+    #{pending_operations => #{}, pending_retry_timer => undefined}.
+
+with_presence_cache(Fun) ->
+    {ok, Pid} = maybe_start_for_test(),
+    try
+        Fun(Pid)
+    after
+        try
+            gen_server:stop(Pid)
+        catch
+            error:_ -> ok;
+            exit:_ -> ok
+        end
+    end.
+
+with_presence_members(RemoteNode, Fun) ->
+    MembersKey = {gateway_cluster_membership, members},
+    RoleMembersKey = {gateway_cluster_membership, members_by_role},
+    OldMembers = persistent_term:get(MembersKey, undefined),
+    OldRoleMembers = persistent_term:get(RoleMembersKey, undefined),
+    persistent_term:put(MembersKey, [node(), RemoteNode]),
+    persistent_term:put(RoleMembersKey, #{presence => [node(), RemoteNode]}),
+    try
+        Fun()
+    after
+        restore_persistent_term(MembersKey, OldMembers),
+        restore_persistent_term(RoleMembersKey, OldRoleMembers)
+    end.
+
+restore_persistent_term(Key, undefined) ->
+    persistent_term:erase(Key);
+restore_persistent_term(Key, Value) ->
+    persistent_term:put(Key, Value).
+
+remote_owned_user_id(RemoteNode) ->
+    remote_owned_user_id(RemoteNode, 1).
+
+remote_owned_user_id(RemoteNode, UserId) when UserId =< 10000 ->
+    case presence_cache_bulk:resolve_owner_nodes(UserId) of
+        [RemoteNode] -> UserId;
+        _ -> remote_owned_user_id(RemoteNode, UserId + 1)
+    end;
+remote_owned_user_id(RemoteNode, _UserId) ->
+    error({remote_owner_not_found, RemoteNode}).
+
+assert_rebalance_keeps_pending_put(RemoteNode, Pid) ->
+    UserId = remote_owned_user_id(RemoteNode),
+    Presence = #{
+        <<"status">> => <<"online">>,
+        <<"user">> => #{<<"id">> => integer_to_binary(UserId)}
+    },
+    State0 = cache_state(sys:get_state(Pid)),
+    {_Reply, State1} = presence_cache:put_local(UserId, Presence, State0),
+    State2 = presence_cache_rebalance:rebalance_ownership(State1),
+    try
+        ?assertEqual(
+            {put, Presence},
+            maps:get(UserId, maps:get(pending_operations, State2))
+        ),
+        ?assertMatch({{ok, Presence}, _}, presence_cache_ops:get_local(UserId, State2))
+    after
+        presence_cache_rebalance:cancel_pending_retry_timer(State2)
+    end.
+
+cache_state(State) when is_map(State) ->
+    State.

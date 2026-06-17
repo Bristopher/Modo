@@ -1,68 +1,74 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(gateway_rpc_misc).
+-typing([eqwalizer]).
 
--export([execute_method/2, get_local_node_stats/0]).
+-export([
+    execute_method/2,
+    get_local_node_id/0,
+    get_local_node_stats/0,
+    get_local_memory_stats/1,
+    get_local_voice_state_counts/0,
+    get_local_active_voice_rooms/0
+]).
+
+-define(DEFAULT_MEMORY_STATS_LIMIT, 100).
+-define(MAX_MEMORY_STATS_LIMIT, 500).
 
 -spec execute_method(binary(), map()) -> map().
 execute_method(<<"process.memory_stats">>, Params) ->
-    Limit =
-        case maps:get(<<"limit">>, Params, undefined) of
-            undefined ->
-                100;
-            LimitValue ->
-                validation:snowflake_or_throw(<<"limit">>, LimitValue)
-        end,
-    Guilds = process_memory_stats:get_guild_memory_stats(Limit),
-    GuildsWithStringMemory = [G#{memory := integer_to_binary(maps:get(memory, G))} || G <- Guilds],
+    Limit = parse_memory_stats_limit(Params),
+    ActiveNodes = gateway_node_router:active_nodes(),
+    Guilds = gateway_rpc_misc_session:collect_and_limit_memory_stats(ActiveNodes, Limit),
+    GuildsWithStringMemory = [
+        G#{memory := integer_to_binary(maps:get(memory, G))}
+     || G <- Guilds
+    ],
     #{<<"guilds">> => GuildsWithStringMemory};
 execute_method(<<"process.node_stats">>, _Params) ->
-    get_local_node_stats().
+    ActiveNodes = gateway_node_router:active_nodes(),
+    gateway_rpc_misc_session:collect_and_aggregate_node_stats(ActiveNodes);
+execute_method(<<"process.voice_state_counts">>, _Params) ->
+    ActiveNodes = voice_state_count_nodes(),
+    gateway_rpc_misc_presence:collect_and_aggregate_voice_state_counts(ActiveNodes);
+execute_method(<<"process.active_voice_rooms">>, _Params) ->
+    ActiveNodes = gateway_node_router:active_nodes(),
+    gateway_rpc_misc_push:collect_and_aggregate_active_voice_rooms(ActiveNodes).
+
+-spec get_local_node_id() -> binary().
+get_local_node_id() ->
+    gateway_rpc_misc_session:get_local_node_id().
 
 -spec get_local_node_stats() -> map().
 get_local_node_stats() ->
-    SessionCount = get_manager_count(session_manager),
-    GuildCount = get_manager_count(guild_manager),
-    PresenceCount = get_manager_count(presence_manager),
-    CallCount = get_manager_count(call_manager),
-    MemoryInfo = erlang:memory(),
-    TotalMemory = proplists:get_value(total, MemoryInfo, 0),
-    ProcessMemory = proplists:get_value(processes, MemoryInfo, 0),
-    SystemMemory = proplists:get_value(system, MemoryInfo, 0),
-    #{
-        <<"status">> => <<"healthy">>,
-        <<"sessions">> => SessionCount,
-        <<"guilds">> => GuildCount,
-        <<"presences">> => PresenceCount,
-        <<"calls">> => CallCount,
-        <<"memory">> => #{
-            <<"total">> => integer_to_binary(TotalMemory),
-            <<"processes">> => integer_to_binary(ProcessMemory),
-            <<"system">> => integer_to_binary(SystemMemory)
-        },
-        <<"process_count">> => erlang:system_info(process_count),
-        <<"process_limit">> => erlang:system_info(process_limit),
-        <<"uptime_seconds">> => element(1, erlang:statistics(wall_clock)) div 1000
-    }.
+    gateway_rpc_misc_session:get_local_node_stats().
 
--spec get_manager_count(atom()) -> non_neg_integer().
-get_manager_count(Manager) ->
-    case gen_server:call(Manager, get_global_count, 1000) of
-        {ok, Count} -> Count;
-        _ -> 0
-    end.
+-spec get_local_memory_stats(pos_integer()) -> [map()].
+get_local_memory_stats(Limit) ->
+    gateway_rpc_misc_session:get_local_memory_stats(Limit).
+
+-spec get_local_voice_state_counts() -> map().
+get_local_voice_state_counts() ->
+    gateway_rpc_misc_presence:get_local_voice_state_counts().
+
+-spec get_local_active_voice_rooms() -> map().
+get_local_active_voice_rooms() ->
+    gateway_rpc_misc_push:get_local_active_voice_rooms().
+
+-spec parse_memory_stats_limit(map()) -> pos_integer().
+parse_memory_stats_limit(Params) ->
+    Limit =
+        case maps:get(<<"limit">>, Params, undefined) of
+            undefined -> ?DEFAULT_MEMORY_STATS_LIMIT;
+            LimitValue -> validation:snowflake_or_throw(<<"limit">>, LimitValue)
+        end,
+    min(Limit, ?MAX_MEMORY_STATS_LIMIT).
+
+-spec voice_state_count_nodes() -> [node()].
+voice_state_count_nodes() ->
+    lists:sort(
+        lists:usort(
+            gateway_node_router:active_nodes(guilds) ++
+                gateway_node_router:active_nodes(calls)
+        )
+    ).

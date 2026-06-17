@@ -17,8 +17,6 @@
 		"@fluxer/hono_types": "workspace:*",
 		"@fluxer/i18n": "workspace:*",
 		"@fluxer/logger": "workspace:*",
-		"@fluxer/sentry": "workspace:*",
-		"@fluxer/telemetry": "workspace:*",
 		"hono": "catalog:"
 	},
 	"devDependencies": {

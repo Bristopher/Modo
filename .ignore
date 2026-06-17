@@ -16,6 +16,7 @@
 **/*~
 **/.*cache
 **/.cache
+**/.claude
 **/__pycache__
 **/.dev.vars
 **/.direnv
@@ -34,7 +35,6 @@
 **/.rebar3
 **/.source
 **/.swc
-**/.turbo
 **/.vercel
 **/_build
 **/_checkouts
@@ -65,7 +65,6 @@
 fluxer.yaml
 fluxer_app/dist/
 /fluxer_marketing/public/static/app.css
-/fluxer_server/data/
 fluxer_static
 geoip_data
 livekit.yaml

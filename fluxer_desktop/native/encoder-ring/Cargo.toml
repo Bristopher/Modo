@@ -1,0 +1,51 @@
+[package]
+name = "fluxer_encoder_ring"
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[workspace]
+resolver = "2"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = {version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_System_LibraryLoader",
+]}
+libloading = "0.9"
+
+[build-dependencies]
+bindgen = {version = "0.72", optional = true}
+
+[features]
+default = []
+bindgen-sdk = ["dep:bindgen"]
+
+[dev-dependencies]
+criterion = "0.8"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2 = "0.6"
+objc2-core-video = {version = "0.3", features = ["CVPixelBuffer", "CVPixelBufferIOSurface", "CVImageBuffer", "CVBuffer", "CVPixelFormatDescription", "CVReturn", "CVBase", "objc2-io-surface"]}
+objc2-core-foundation = {version = "0.3", features = ["CFDictionary", "CFNumber", "CFString", "CFBase"]}
+objc2-io-surface = {version = "0.3", features = ["IOSurfaceRef", "objc2-core-foundation"]}
+
+[[bench]]
+name = "ring"
+harness = false
+
+[[bench]]
+name = "encoder_handoff"
+harness = false

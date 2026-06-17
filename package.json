@@ -2,24 +2,48 @@
 	"name": "fluxer",
 	"private": true,
 	"scripts": {
-		"build": "turbo run build",
-		"dev": "sh scripts/run_dev.sh",
-		"dev:docs": "cd fluxer_docs && npx mint dev --no-open",
-		"dev:cassandra": "FLUXER_DATABASE=cassandra sh scripts/run_dev.sh",
-		"docs:generate": "node fluxer_docs/scripts/generate_resources.mjs && node fluxer_docs/scripts/generate_config.mjs && node fluxer_docs/scripts/generate_media_proxy.mjs",
-		"docs:generate:config": "node fluxer_docs/scripts/generate_config.mjs",
-		"docs:generate:media-proxy": "node fluxer_docs/scripts/generate_media_proxy.mjs",
-		"docs:generate:resources": "node fluxer_docs/scripts/generate_resources.mjs",
+		"build": "cargo run -p fluxer-dev -- build",
+		"dev": "cargo run -p fluxer-dev -- dev",
+		"dev:bootstrap": "cargo run -p fluxer-dev -- bootstrap",
+		"dev:cassandra:apply": "cargo run -p fluxer-dev -- cassandra apply",
+		"dev:cassandra:diff": "cargo run -p fluxer-dev -- cassandra diff",
+		"dev:cassandra:verify": "cargo run -p fluxer-dev -- cassandra verify",
+		"dev:desktop:build": "cargo run -p fluxer-dev -- desktop build",
+		"dev:desktop:install": "cargo run -p fluxer-dev -- desktop install",
+		"dev:desktop:canary": "cargo run -p fluxer-dev -- desktop canary",
+		"dev:desktop:package": "cargo run -p fluxer-dev -- desktop package",
+		"dev:desktop:run": "cargo run -p fluxer-dev -- desktop run",
+		"dev:desktop:smoke": "cargo run -p fluxer-dev -- desktop smoke-build",
+		"dev:infra:down": "docker compose -f .devcontainer/docker-compose.yml down",
+		"dev:infra:restart": "pnpm dev:infra:down && pnpm dev:infra:up",
+		"dev:infra:up": "docker compose -f .devcontainer/docker-compose.yml up -d postgres cassandra valkey nats seaweedfs livekit elasticsearch meilisearch mailpit",
+		"dev:media-proxy:seaweedfs": "cargo run -p fluxer-dev -- media-proxy seaweedfs-integration",
+		"dev:native-voice-it": "cargo run -p fluxer-dev -- native-voice-it",
+		"dev:services": "cargo run -p fluxer-dev -- rust-services",
+		"dev:smoke": "cargo run -p fluxer-dev -- smoke",
+		"dev:smoke:public": "cargo run -p fluxer-dev -- smoke --public",
+		"dev:tunnel": "cargo run -p fluxer-dev -- dev --cloudflare-tunnel",
+		"dev:tunnel:configure": "cargo run -p fluxer-dev -- tunnel configure",
+		"dev:tunnel:env": "cargo run -p fluxer-dev -- tunnel print-env",
+		"dev:tunnel:run": "cargo run -p fluxer-dev -- tunnel run",
+		"docs:build": "bash fluxer_docs/serve.sh build --clean",
+		"docs:dev": "bash fluxer_docs/serve.sh",
+		"fake-ncmec": "pnpm tsx fluxer_api/src/api/test/fake-ncmec/Bin.ts",
+		"i18n:compile": "pnpm --filter fluxer_app i18n:compile && pnpm --filter @fluxer/i18n static:compile && pnpm --filter @fluxer/i18n generate:types",
+		"i18n:refresh": "pnpm --filter fluxer_app i18n:refresh",
 		"i18n:generate": "pnpm --filter @fluxer/i18n generate:types",
 		"i18n:prune:apply": "pnpm --filter @fluxer/i18n prune:apply",
 		"i18n:prune:dry": "pnpm --filter @fluxer/i18n prune:dry",
-		"i18n:typecheck": "pnpm --filter @fluxer/errors --filter @fluxer/email --filter @fluxer/marketing typecheck",
-		"knip": "pnpm --filter fluxer_app i18n:compile && FLUXER_CONFIG=config/config.test.json knip",
-		"lint": "turbo run lint",
-		"schema:generate": "pnpm --filter @fluxer/config run generate && node fluxer_docs/scripts/generate_config.mjs",
-		"test": "turbo run test --filter='!@fluxer/integration'",
+		"i18n:source-sync": "pnpm --filter fluxer_app i18n:extract && cargo run --quiet --manifest-path tools/marketing/update-gettext-catalogs/Cargo.toml && pnpm --filter @fluxer/i18n static:extract && pnpm i18n:compile",
+		"i18n:typecheck": "pnpm --filter @fluxer/errors --filter @pkgs/email typecheck",
+		"i18n:weblate-compile": "pnpm i18n:compile",
+		"knip": "cargo run -p fluxer-dev -- knip",
+		"openapi:generate": "pnpm --filter @fluxer/openapi generate",
+		"openapi:validate": "pnpm --filter @fluxer/openapi validate",
+		"remote": "node scripts/remote.mjs",
+		"test": "cargo run -p fluxer-dev -- test",
 		"test:integration": "pnpm --filter @fluxer/integration test",
-		"typecheck": "turbo run typecheck"
+		"typecheck": "cargo run -p fluxer-dev -- typecheck"
 	},
 	"prettier": {
 		"bracketSpacing": false,
@@ -32,7 +56,7 @@
 		"@biomejs/biome": "catalog:",
 		"@vitest/coverage-v8": "catalog:",
 		"knip": "catalog:",
-		"turbo": "^2.8.3"
+		"tsx": "catalog:"
 	},
 	"packageManager": "pnpm@10.29.3",
 	"pnpm": {
@@ -48,10 +72,12 @@
 		"overrides": {
 			"@lingui/swc-plugin": "catalog:",
 			"@rspack/cli": "catalog:",
-			"@rspack/core": "catalog:"
+			"@rspack/core": "catalog:",
+			"@floating-ui/dom": "1.7.5"
 		},
 		"patchedDependencies": {
-			"@phosphor-icons/react@2.1.10": "patches/@phosphor-icons__react@2.1.10.patch"
+			"@phosphor-icons/react@2.1.10": "patches/@phosphor-icons__react@2.1.10.patch",
+			"@hono/node-server@1.19.9": "patches/@hono__node-server@1.19.9.patch"
 		}
 	}
 }

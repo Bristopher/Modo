@@ -1,85 +1,70 @@
-ARG BUILD_SHA
-ARG BUILD_NUMBER
-ARG BUILD_TIMESTAMP
-ARG RELEASE_CHANNEL=nightly
+# SPDX-License-Identifier: AGPL-3.0-or-later
 
-FROM node:24-bookworm-slim AS base
+FROM rust:1-bookworm AS builder
+
+ARG BUILD_VERSION=""
+ARG TARGETARCH
 
 WORKDIR /usr/src/app
 
-RUN corepack enable && corepack prepare pnpm@10.26.0 --activate
-
-FROM base AS deps
-
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY patches/ ./patches/
-COPY packages/ ./packages/
-COPY fluxer_marketing/package.json ./fluxer_marketing/
-
-RUN pnpm install --frozen-lockfile
-
-FROM deps AS build
-
-COPY tsconfigs /usr/src/app/tsconfigs
-COPY fluxer_marketing/tsconfig.json ./fluxer_marketing/
-COPY fluxer_marketing/src ./fluxer_marketing/src
-WORKDIR /usr/src/app
-RUN pnpm --filter @fluxer/config generate
-RUN pnpm --filter @fluxer/marketing build:css \
-	&& mkdir -p fluxer_marketing/public/static \
-	&& cp -r packages/marketing/public/static/. fluxer_marketing/public/static/
-
-FROM base AS prod-deps
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates nodejs npm pkg-config \
+	&& npm install -g pnpm@10.29.3 \
+	&& rm -rf /var/lib/apt/lists/*
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY patches/ ./patches/
-COPY packages/ ./packages/
-COPY fluxer_marketing/package.json ./fluxer_marketing/
+COPY patches patches
+COPY fluxer_marketing/package.json fluxer_marketing/package.json
+RUN pnpm install --frozen-lockfile --filter fluxer_marketing --config.block-exotic-subdeps=false
 
-RUN pnpm install --frozen-lockfile --prod
+COPY Cargo.lock Cargo.lock
+COPY fluxer_common fluxer_common
+COPY fluxer_marketing fluxer_marketing
+RUN printf '%s\n' \
+	'[workspace]' \
+	'members = ["fluxer_common", "fluxer_marketing"]' \
+	'resolver = "2"' \
+	'' \
+	'[workspace.package]' \
+	'edition = "2024"' \
+	'license = "AGPL-3.0-or-later"' \
+	> Cargo.toml
+RUN pnpm install --frozen-lockfile --filter fluxer_marketing --config.block-exotic-subdeps=false
+RUN OXIDE_VERSION="$(node -p "require('./fluxer_marketing/package.json').optionalDependencies['@tailwindcss/oxide-linux-x64-gnu']")" \
+	&& case "${TARGETARCH}" in \
+		amd64) OXIDE_PKG="@tailwindcss/oxide-linux-x64-gnu" ;; \
+		arm64) OXIDE_PKG="@tailwindcss/oxide-linux-arm64-gnu" ;; \
+		*) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+	esac \
+	&& npm install --prefix /tmp/tailwind-oxide --no-audit --no-fund "${OXIDE_PKG}@${OXIDE_VERSION}" \
+	&& mkdir -p node_modules/@tailwindcss \
+	&& cp -R "/tmp/tailwind-oxide/node_modules/${OXIDE_PKG}" "node_modules/${OXIDE_PKG}" \
+	&& rm -rf /tmp/tailwind-oxide
 
-COPY --from=build /usr/src/app/packages/marketing/public /usr/src/app/packages/marketing/public
+ENV FLUXER_BUILD_VERSION="${BUILD_VERSION}"
 
-FROM node:24-bookworm-slim
+RUN cargo test -p fluxer_marketing \
+	&& cargo build --release -p fluxer_marketing \
+	&& cp target/release/fluxer_marketing /usr/local/bin/fluxer-marketing
 
-ARG BUILD_SHA
-ARG BUILD_NUMBER
-ARG BUILD_TIMESTAMP
-ARG RELEASE_CHANNEL
+FROM debian:bookworm-slim AS runtime
 
-WORKDIR /usr/src/app/fluxer_marketing
+ARG BUILD_VERSION=""
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-	curl && \
-	rm -rf /var/lib/apt/lists/*
+WORKDIR /usr/local/bin
 
-RUN corepack enable && corepack prepare pnpm@10.26.0 --activate
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates \
+	&& rm -rf /var/lib/apt/lists/*
 
-COPY --from=prod-deps /usr/src/app/node_modules /usr/src/app/node_modules
-COPY --from=prod-deps /usr/src/app/fluxer_marketing/node_modules ./node_modules
-COPY --from=prod-deps /usr/src/app/packages /usr/src/app/packages
-COPY --from=build /usr/src/app/packages/config/src/ConfigSchema.json /usr/src/app/packages/config/src/ConfigSchema.json
-COPY --from=build /usr/src/app/packages/config/src/MasterZodSchema.generated.tsx /usr/src/app/packages/config/src/MasterZodSchema.generated.tsx
-COPY tsconfigs /usr/src/app/tsconfigs
-COPY --from=build /usr/src/app/fluxer_marketing/tsconfig.json ./tsconfig.json
-COPY --from=build /usr/src/app/fluxer_marketing/src ./src
-COPY --from=build /usr/src/app/fluxer_marketing/public ./public
-COPY fluxer_marketing/package.json ./
+COPY --from=builder /usr/local/bin/fluxer-marketing /usr/local/bin/fluxer-marketing
 
-RUN mkdir -p /usr/src/app/.cache/corepack && \
-	chown -R nobody:nogroup /usr/src/app
+ENV BUILD_VERSION="${BUILD_VERSION}"
+ENV FLUXER_MARKETING_HOST="0.0.0.0"
+ENV FLUXER_MARKETING_PORT="8080"
 
-ENV HOME=/usr/src/app
-ENV COREPACK_HOME=/usr/src/app/.cache/corepack
-ENV NODE_ENV=production
-ENV FLUXER_MARKETING_PORT=8080
-ENV BUILD_SHA=${BUILD_SHA}
-ENV BUILD_NUMBER=${BUILD_NUMBER}
-ENV BUILD_TIMESTAMP=${BUILD_TIMESTAMP}
-ENV RELEASE_CHANNEL=${RELEASE_CHANNEL}
-
-USER nobody
+USER 65532:65532
 
 EXPOSE 8080
 
-CMD ["pnpm", "start"]
+CMD ["/usr/local/bin/fluxer-marketing"]

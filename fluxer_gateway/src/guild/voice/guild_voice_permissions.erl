@@ -1,119 +1,255 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(guild_voice_permissions).
+-typing([eqwalizer]).
 
--export([check_voice_permissions_and_limits/6]).
+-export([check_voice_permissions_and_limits/6, users_in_channel/2]).
 
--import(utils, [parse_iso8601_to_unix_ms/1]).
-
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
--endif.
+-export_type([
+    guild_state/0,
+    voice_state_map/0,
+    channel/0
+]).
 
 -type guild_state() :: map().
 -type voice_state_map() :: #{binary() => map()}.
 -type channel() :: map().
+-type channel_voice_stats() :: #{
+    users := sets:set(integer()),
+    any_camera_active := boolean(),
+    user_connection_count := non_neg_integer()
+}.
+
+-define(DEFAULT_VOICE_CONNECTION_LIMIT, 5).
+-define(MAX_VOICE_CONNECTION_LIMIT, 100).
+-define(UNLIMITED_VOICE_USER_LIMIT, 0).
 
 -spec check_voice_permissions_and_limits(
     integer(), integer(), channel(), voice_state_map(), guild_state(), boolean()
 ) ->
     {ok, allowed} | {error, atom(), atom()}.
-check_voice_permissions_and_limits(UserId, ChannelIdValue, Channel, VoiceStates, State, IsUpdate) ->
+check_voice_permissions_and_limits(
+    UserId, ChannelIdValue, Channel, VoiceStates, State, IsUpdate
+) ->
+    case voice_join_allowed(UserId, ChannelIdValue, Channel, VoiceStates, State, IsUpdate) of
+        ok -> {ok, allowed};
+        {error, ErrorAtom} -> gateway_errors:error(ErrorAtom)
+    end.
+
+-spec voice_join_allowed(
+    integer(), integer(), channel(), voice_state_map(), guild_state(), boolean()
+) -> ok | {error, atom()}.
+voice_join_allowed(UserId, ChannelIdValue, Channel, VoiceStates, State, IsUpdate) ->
     case is_member_timed_out(UserId, State) of
         true ->
-            gateway_errors:error(voice_member_timed_out);
+            {error, voice_member_timed_out};
         false ->
-            case has_view_and_connect_perms(UserId, ChannelIdValue, State) of
-                false ->
-                    gateway_errors:error(voice_permission_denied);
-                true ->
-                    case
-                        channel_has_capacity(UserId, ChannelIdValue, Channel, VoiceStates, IsUpdate)
-                    of
-                        true ->
-                            {ok, allowed};
-                        false ->
-                            gateway_errors:error(voice_channel_full)
-                    end
-            end
+            voice_perms_allowed(UserId, ChannelIdValue, Channel, VoiceStates, State, IsUpdate)
+    end.
+
+-spec voice_perms_allowed(
+    integer(), integer(), channel(), voice_state_map(), guild_state(), boolean()
+) -> ok | {error, atom()}.
+voice_perms_allowed(UserId, ChId, Channel, VS, State, IsUpdate) ->
+    case has_view_and_connect_perms(UserId, ChId, State) of
+        false ->
+            {error, voice_permission_denied};
+        true ->
+            voice_capacity_allowed(UserId, ChId, Channel, VS, State, IsUpdate)
+    end.
+
+-spec voice_capacity_allowed(
+    integer(), integer(), channel(), voice_state_map(), guild_state(), boolean()
+) -> ok | {error, atom()}.
+voice_capacity_allowed(UserId, ChId, Channel, VS, State, IsUpdate) ->
+    Stats = channel_voice_stats(UserId, ChId, VS),
+    case channel_has_capacity(UserId, Channel, Stats, IsUpdate) of
+        false ->
+            {error, voice_channel_full};
+        true ->
+            voice_connection_limit_allowed(
+                UserId, ChId, Channel, Stats, State, IsUpdate
+            )
+    end.
+
+-spec voice_connection_limit_allowed(
+    integer(), integer(), channel(), channel_voice_stats(), guild_state(), boolean()
+) -> ok | {error, atom()}.
+voice_connection_limit_allowed(UserId, ChannelIdValue, Channel, Stats, State, IsUpdate) ->
+    case
+        channel_allows_user_connection_limit(
+            UserId, ChannelIdValue, Channel, Stats, State, IsUpdate
+        )
+    of
+        true -> ok;
+        false -> {error, voice_connection_limit_reached}
     end.
 
 -spec has_view_and_connect_perms(integer(), integer(), guild_state()) -> boolean().
 has_view_and_connect_perms(UserId, ChannelIdValue, State) ->
-    case guild_virtual_channel_access:has_virtual_access(UserId, ChannelIdValue, State) of
-        true ->
-            true;
-        false ->
-            case guild_virtual_channel_access:is_move_pending(UserId, ChannelIdValue, State) of
-                true ->
-                    true;
-                false ->
-                    Permissions = resolve_permissions(UserId, ChannelIdValue, State),
-                    ViewPerm = constants:view_channel_permission(),
-                    ConnectPerm = constants:connect_permission(),
-                    HasView = (Permissions band ViewPerm) =:= ViewPerm,
-                    HasConnect = (Permissions band ConnectPerm) =:= ConnectPerm,
-                    HasView andalso HasConnect
-            end
-    end.
+    guild_virtual_channel_access:has_virtual_access(UserId, ChannelIdValue, State) orelse
+        guild_virtual_channel_access:is_move_pending(UserId, ChannelIdValue, State) orelse
+        has_resolved_view_and_connect_perms(UserId, ChannelIdValue, State).
 
--spec channel_has_capacity(integer(), integer(), channel(), voice_state_map(), boolean()) ->
+-spec has_resolved_view_and_connect_perms(integer(), integer(), guild_state()) -> boolean().
+has_resolved_view_and_connect_perms(UserId, ChannelIdValue, State) ->
+    Permissions = resolve_permissions(UserId, ChannelIdValue, State),
+    ViewPerm = constants:view_channel_permission(),
+    ConnectPerm = constants:connect_permission(),
+    HasView = permission_bits:has(Permissions, ViewPerm),
+    HasConnect = permission_bits:has(Permissions, ConnectPerm),
+    HasView andalso HasConnect.
+
+-spec channel_has_capacity(integer(), channel(), channel_voice_stats(), boolean()) ->
     boolean().
-channel_has_capacity(UserId, ChannelIdValue, Channel, VoiceStates, IsUpdate) ->
-    UserLimit = maps:get(<<"user_limit">>, Channel, 0),
-    AnyCameraActive = any_camera_active_in_channel(ChannelIdValue, VoiceStates),
+channel_has_capacity(UserId, Channel, Stats, IsUpdate) ->
+    UserLimit = channel_user_limit(Channel),
+    AnyCameraActive = maps:get(any_camera_active, Stats),
     EffectiveLimit = effective_user_limit(UserLimit, AnyCameraActive),
-    case EffectiveLimit of
-        0 ->
-            true;
-        Limit when Limit > 0 ->
-            UsersInChannel = users_in_channel(ChannelIdValue, VoiceStates),
-            CurrentCount = sets:size(UsersInChannel),
-            AlreadyPresent = sets:is_element(UserId, UsersInChannel),
-            AdjustedCount =
-                case AlreadyPresent orelse IsUpdate of
-                    true -> CurrentCount - 1;
-                    false -> CurrentCount
-                end,
-            AdjustedCount < Limit;
-        _ ->
-            true
+    check_effective_limit(EffectiveLimit, UserId, Stats, IsUpdate).
+
+-spec check_effective_limit(integer(), integer(), channel_voice_stats(), boolean()) ->
+    boolean().
+check_effective_limit(?UNLIMITED_VOICE_USER_LIMIT, _UserId, _Stats, _IsUpdate) ->
+    true;
+check_effective_limit(Limit, UserId, Stats, IsUpdate) when Limit > 0 ->
+    UsersInChannel = maps:get(users, Stats),
+    CurrentCount = sets:size(UsersInChannel),
+    AlreadyPresent = sets:is_element(UserId, UsersInChannel),
+    AdjustedCount = adjusted_user_count(CurrentCount, AlreadyPresent, IsUpdate),
+    AdjustedCount < Limit;
+check_effective_limit(_, _UserId, _Stats, _IsUpdate) ->
+    true.
+
+-spec adjusted_user_count(integer(), boolean(), boolean()) -> integer().
+adjusted_user_count(CurrentCount, AlreadyPresent, IsUpdate) ->
+    case AlreadyPresent orelse IsUpdate of
+        true -> CurrentCount - 1;
+        false -> CurrentCount
     end.
 
--spec any_camera_active_in_channel(integer(), voice_state_map()) -> boolean().
-any_camera_active_in_channel(ChannelIdValue, VoiceStates) ->
-    lists:any(
-        fun({_ConnId, VS}) ->
-            case map_utils:get_integer(VS, <<"channel_id">>, undefined) of
-                ChannelIdValue ->
-                    maps:get(<<"self_video">>, VS, false) =:= true;
-                _ ->
-                    false
-            end
+-spec channel_voice_stats(integer(), integer(), voice_state_map()) -> channel_voice_stats().
+channel_voice_stats(UserId, ChannelIdValue, VoiceStates0) ->
+    VoiceStates = voice_state_utils:ensure_voice_states(VoiceStates0),
+    maps:fold(
+        fun(_ConnId, VoiceState, Acc) ->
+            add_channel_voice_state_stats(UserId, ChannelIdValue, VoiceState, Acc)
         end,
-        maps:to_list(VoiceStates)
+        #{users => sets:new(), any_camera_active => false, user_connection_count => 0},
+        VoiceStates
     ).
 
+-spec add_channel_voice_state_stats(integer(), integer(), map(), channel_voice_stats()) ->
+    channel_voice_stats().
+add_channel_voice_state_stats(UserId, ChannelIdValue, VoiceState, Acc) ->
+    case voice_state_utils:voice_state_channel_id(VoiceState) of
+        ChannelIdValue ->
+            add_matching_channel_voice_state_stats(UserId, VoiceState, Acc);
+        _ ->
+            Acc
+    end.
+
+-spec add_matching_channel_voice_state_stats(integer(), map(), channel_voice_stats()) ->
+    channel_voice_stats().
+add_matching_channel_voice_state_stats(UserId, VoiceState, Acc) ->
+    VoiceUserId = voice_state_utils:voice_state_user_id(VoiceState),
+    Acc1 = add_voice_state_user_to_stats(VoiceUserId, Acc),
+    Acc2 = update_user_connection_count(UserId, VoiceUserId, Acc1),
+    update_camera_active(VoiceState, Acc2).
+
+-spec add_voice_state_user_to_stats(integer() | undefined, channel_voice_stats()) ->
+    channel_voice_stats().
+add_voice_state_user_to_stats(undefined, Acc) ->
+    Acc;
+add_voice_state_user_to_stats(VoiceUserId, Acc) ->
+    Acc#{users => sets:add_element(VoiceUserId, maps:get(users, Acc))}.
+
+-spec update_user_connection_count(integer(), integer() | undefined, channel_voice_stats()) ->
+    channel_voice_stats().
+update_user_connection_count(UserId, UserId, Acc) ->
+    Acc#{user_connection_count => maps:get(user_connection_count, Acc) + 1};
+update_user_connection_count(_UserId, _VoiceUserId, Acc) ->
+    Acc.
+
+-spec update_camera_active(map(), channel_voice_stats()) -> channel_voice_stats().
+update_camera_active(VoiceState, Acc) ->
+    case maps:get(<<"self_video">>, VoiceState, false) of
+        true -> Acc#{any_camera_active => true};
+        _ -> Acc
+    end.
+
+-spec channel_user_limit(channel()) -> non_neg_integer().
+channel_user_limit(Channel) ->
+    case map_utils:get_integer(Channel, <<"user_limit">>, undefined) of
+        Limit when is_integer(Limit), Limit >= 0 -> Limit;
+        _ -> ?UNLIMITED_VOICE_USER_LIMIT
+    end.
+
 -spec effective_user_limit(integer(), boolean()) -> integer().
-effective_user_limit(0, false) -> 0;
-effective_user_limit(0, true) -> 25;
+effective_user_limit(?UNLIMITED_VOICE_USER_LIMIT, false) -> ?UNLIMITED_VOICE_USER_LIMIT;
+effective_user_limit(?UNLIMITED_VOICE_USER_LIMIT, true) -> 25;
 effective_user_limit(Limit, false) -> Limit;
 effective_user_limit(Limit, true) -> min(Limit, 25).
+
+-spec channel_allows_user_connection_limit(
+    integer(), integer(), channel(), channel_voice_stats(), guild_state(), boolean()
+) -> boolean().
+channel_allows_user_connection_limit(
+    UserId, ChannelIdValue, Channel, Stats, State, IsUpdate
+) ->
+    Limit = effective_voice_connection_limit(Channel),
+    ActiveCount = maps:get(user_connection_count, Stats),
+    PendingCount = pending_user_connection_count(UserId, ChannelIdValue, State),
+    AdjustedActiveCount =
+        case IsUpdate andalso ActiveCount > 0 of
+            true -> ActiveCount - 1;
+            false -> ActiveCount
+        end,
+    AdjustedActiveCount + PendingCount < Limit.
+
+-spec effective_voice_connection_limit(channel()) -> integer().
+effective_voice_connection_limit(Channel) ->
+    case
+        map_utils:get_integer(
+            Channel, <<"voice_connection_limit">>, ?DEFAULT_VOICE_CONNECTION_LIMIT
+        )
+    of
+        Limit when is_integer(Limit), Limit >= 1, Limit =< ?MAX_VOICE_CONNECTION_LIMIT ->
+            Limit;
+        Limit when is_integer(Limit), Limit > ?MAX_VOICE_CONNECTION_LIMIT ->
+            ?MAX_VOICE_CONNECTION_LIMIT;
+        _ ->
+            ?DEFAULT_VOICE_CONNECTION_LIMIT
+    end.
+
+-spec pending_user_connection_count(integer(), integer(), guild_state()) -> non_neg_integer().
+pending_user_connection_count(UserId, ChannelIdValue, State) ->
+    PendingConns = maps:get(pending_voice_connections, State, #{}),
+    Now = erlang:system_time(millisecond),
+    maps:fold(
+        fun(_ConnId, PendingData, Acc) ->
+            increment_if_pending_matches(UserId, ChannelIdValue, PendingData, Now, Acc)
+        end,
+        0,
+        PendingConns
+    ).
+
+-spec increment_if_pending_matches(
+    integer(), integer(), map(), integer(), non_neg_integer()
+) -> non_neg_integer().
+increment_if_pending_matches(UserId, ChannelIdValue, PendingData, Now, Acc) ->
+    case pending_connection_matches(UserId, ChannelIdValue, PendingData, Now) of
+        true -> Acc + 1;
+        false -> Acc
+    end.
+
+-spec pending_connection_matches(integer(), integer(), map(), integer()) -> boolean().
+pending_connection_matches(UserId, ChannelIdValue, PendingData, Now) ->
+    PendingUserId = map_utils:get_integer(PendingData, user_id, undefined),
+    PendingChannelId = map_utils:get_integer(PendingData, channel_id, undefined),
+    ExpiresAt = map_utils:get_integer(PendingData, expires_at, undefined),
+    PendingUserId =:= UserId andalso PendingChannelId =:= ChannelIdValue andalso
+        (ExpiresAt =:= undefined orelse ExpiresAt > Now).
 
 -spec is_member_timed_out(integer(), guild_state()) -> boolean().
 is_member_timed_out(UserId, State) ->
@@ -121,15 +257,17 @@ is_member_timed_out(UserId, State) ->
         undefined ->
             false;
         Member ->
-            TimeoutMs = parse_iso8601_to_unix_ms(
-                maps:get(<<"communication_disabled_until">>, Member, undefined)
-            ),
-            case TimeoutMs of
-                undefined ->
-                    false;
-                Value when is_integer(Value) ->
-                    Value > erlang:system_time(millisecond)
-            end
+            member_timed_out(Member)
+    end.
+
+-spec member_timed_out(map()) -> boolean().
+member_timed_out(Member) ->
+    TimeoutMs = utils:parse_iso8601_to_unix_ms(
+        maps:get(<<"communication_disabled_until">>, Member, undefined)
+    ),
+    case TimeoutMs of
+        undefined -> false;
+        Value when is_integer(Value) -> Value > erlang:system_time(millisecond)
     end.
 
 -spec users_in_channel(integer(), voice_state_map()) -> sets:set(integer()).
@@ -137,19 +275,26 @@ users_in_channel(ChannelIdValue, VoiceStates0) ->
     VoiceStates = voice_state_utils:ensure_voice_states(VoiceStates0),
     maps:fold(
         fun(_ConnId, VState, Acc) ->
-            case voice_state_utils:voice_state_channel_id(VState) of
-                ChannelIdValue ->
-                    case voice_state_utils:voice_state_user_id(VState) of
-                        undefined -> Acc;
-                        UserId -> sets:add_element(UserId, Acc)
-                    end;
-                _ ->
-                    Acc
-            end
+            add_user_if_voice_state_in_channel(VState, ChannelIdValue, Acc)
         end,
         sets:new(),
         VoiceStates
     ).
+
+-spec add_user_if_voice_state_in_channel(map(), integer(), sets:set(integer())) ->
+    sets:set(integer()).
+add_user_if_voice_state_in_channel(VState, ChannelIdValue, Acc) ->
+    case voice_state_utils:voice_state_channel_id(VState) of
+        ChannelIdValue -> add_voice_state_user(VState, Acc);
+        _ -> Acc
+    end.
+
+-spec add_voice_state_user(map(), sets:set(integer())) -> sets:set(integer()).
+add_voice_state_user(VState, Acc) ->
+    case voice_state_utils:voice_state_user_id(VState) of
+        undefined -> Acc;
+        UserId -> sets:add_element(UserId, Acc)
+    end.
 
 -spec resolve_permissions(integer(), integer(), guild_state()) -> integer().
 resolve_permissions(UserId, ChannelIdValue, State) ->
@@ -159,52 +304,3 @@ resolve_permissions(UserId, ChannelIdValue, State) ->
         _ ->
             guild_permissions:get_member_permissions(UserId, ChannelIdValue, State)
     end.
-
--ifdef(TEST).
-
-voice_permissions_missing_view_test() ->
-    State = permission_test_state(0, fun(_) -> constants:view_channel_permission() end),
-    Result = check_voice_permissions_and_limits(1, 10, #{<<"user_limit">> => 0}, #{}, State, false),
-    ?assertMatch({error, permission_denied, voice_permission_denied}, Result).
-
-voice_permissions_full_channel_test() ->
-    State = permission_test_state(2, fun(_) -> required_voice_perms() end),
-    VoiceStates = #{
-        <<"conn1">> => #{<<"channel_id">> => <<"10">>, <<"user_id">> => <<"1">>},
-        <<"conn2">> => #{<<"channel_id">> => <<"10">>, <<"user_id">> => <<"2">>}
-    },
-    Result = check_voice_permissions_and_limits(
-        3, 10, #{<<"user_limit">> => 2}, VoiceStates, State, false
-    ),
-    ?assertMatch({error, permission_denied, voice_channel_full}, Result).
-
-voice_permissions_existing_user_update_test() ->
-    State = permission_test_state(2, fun(_) -> required_voice_perms() end),
-    VoiceStates = #{
-        <<"conn1">> => #{<<"channel_id">> => <<"10">>, <<"user_id">> => <<"1">>},
-        <<"conn2">> => #{<<"channel_id">> => <<"10">>, <<"user_id">> => <<"2">>}
-    },
-    Result = check_voice_permissions_and_limits(
-        1, 10, #{<<"user_limit">> => 2}, VoiceStates, State, true
-    ),
-    ?assertEqual({ok, allowed}, Result).
-
-users_in_channel_test() ->
-    VoiceStates = #{
-        <<"conn1">> => #{<<"channel_id">> => <<"10">>, <<"user_id">> => <<"1">>},
-        <<"conn2">> => #{<<"channel_id">> => <<"10">>, <<"user_id">> => <<"2">>},
-        <<"conn3">> => #{<<"channel_id">> => <<"20">>, <<"user_id">> => <<"3">>}
-    },
-    Result = users_in_channel(10, VoiceStates),
-    ?assertEqual(2, sets:size(Result)),
-    ?assert(sets:is_element(1, Result)),
-    ?assert(sets:is_element(2, Result)),
-    ?assertNot(sets:is_element(3, Result)).
-
-required_voice_perms() ->
-    constants:view_channel_permission() bor constants:connect_permission().
-
-permission_test_state(GuildId, PermFun) ->
-    #{id => GuildId, test_perm_fun => PermFun}.
-
--endif.

@@ -1,29 +1,17 @@
 {
 	"name": "fluxer_marketing",
 	"private": true,
-	"type": "module",
 	"scripts": {
-		"build:css": "pnpm --filter @fluxer/marketing build:css",
-		"build:css:watch": "pnpm --filter @fluxer/marketing build:css:watch",
-		"dev": "tsx watch --clear-screen=false src/index.tsx",
-		"start": "pnpm build:css && tsx src/index.tsx",
-		"typecheck": "tsgo --noEmit"
-	},
-	"dependencies": {
-		"@fluxer/cache": "workspace:*",
-		"@fluxer/config": "workspace:*",
-		"@fluxer/hono": "workspace:*",
-		"@fluxer/initialization": "workspace:*",
-		"@fluxer/kv_client": "workspace:*",
-		"@fluxer/logger": "workspace:*",
-		"@fluxer/marketing": "workspace:*",
-		"@fluxer/rate_limit": "workspace:*",
-		"hono": "catalog:",
-		"tsx": "catalog:"
+		"build:css": "tailwindcss -i ./src/styles/app.css -o ./target/app.css --minify",
+		"preprocess:blog-image": "cargo run -p fluxer-dev -- marketing preprocess-blog-image",
+		"preprocess:blog-video": "cargo run -p fluxer-dev -- marketing preprocess-blog-video"
 	},
 	"devDependencies": {
-		"@types/node": "catalog:",
-		"@typescript/native-preview": "catalog:"
+		"@tailwindcss/cli": "catalog:",
+		"tailwindcss": "catalog:"
+	},
+	"optionalDependencies": {
+		"@tailwindcss/oxide-linux-x64-gnu": "4.2.1"
 	},
 	"packageManager": "pnpm@10.29.3"
 }

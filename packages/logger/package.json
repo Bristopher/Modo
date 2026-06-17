@@ -7,7 +7,6 @@
 		"typecheck": "tsgo --noEmit"
 	},
 	"dependencies": {
-		"@opentelemetry/api": "catalog:",
 		"pino": "catalog:",
 		"pino-pretty": "catalog:"
 	},

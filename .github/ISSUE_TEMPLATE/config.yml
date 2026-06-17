@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Feature requests
+  - name: Ideas and feature requests
     url: https://github.com/orgs/fluxerapp/discussions
     about: Suggest an improvement or new capability.
-  - name: Security vulnerability report
+  - name: Security reports
     url: https://fluxer.app/security
-    about: Please report security issues privately using our security policy.
+    about: Report vulnerabilities privately.

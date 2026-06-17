@@ -1,75 +1,73 @@
 {
 	"name": "Fluxer",
 	"dockerComposeFile": "docker-compose.yml",
-	"service": "app",
-	"workspaceFolder": "/workspace",
-
-	"features": {
-		"ghcr.io/devcontainers/features/node:1": {
-			"version": "24",
-			"pnpmVersion": "10.29.3"
-		},
-		"ghcr.io/devcontainers/features/go:1": {
-			"version": "1.24"
-		},
-		"ghcr.io/devcontainers/features/rust:1": {
-			"version": "1.93.0",
-			"targets": "wasm32-unknown-unknown"
-		},
-		"ghcr.io/devcontainers/features/python:1": {
-			"version": "os-provided",
-			"installTools": false
-		}
-	},
-
-	"onCreateCommand": ".devcontainer/on-create.sh",
-
+	"service": "workspace",
+	"workspaceFolder": "/workspaces/fluxer",
+	"shutdownAction": "stopCompose",
+	"remoteUser": "vscode",
 	"remoteEnv": {
-		"FLUXER_CONFIG": "${containerWorkspaceFolder}/config/config.json",
-		"FLUXER_DATABASE": "sqlite"
+		"DOCKER_HOST": "unix:///var/run/docker.sock",
+		"KUBECONFIG": "/workspaces/fluxer/.fluxer/k8s/local-kubeconfig"
 	},
-
-	"forwardPorts": [48763, 6379, 7700, 7880],
-
+	"runServices": ["workspace", "cassandra", "valkey", "nats", "livekit", "elasticsearch"],
+	"forwardPorts": [
+		3000, 8088, 8080, 8771, 8082, 3010, 3020, 8100, 8101, 8102, 8103, 8104, 8105, 8106, 8107, 8108, 8109, 8110, 8111,
+		8112, 8113, 8114, 8115, 8116, 8117, 8118, 8119, 8120, 8121, 8122, 8123, 8124, 8125, 3900, 8888, 9333, 9340, 23646,
+		4222, 7880, 9200, 8000
+	],
 	"portsAttributes": {
-		"48763": {
-			"label": "Fluxer (Caddy)",
-			"onAutoForward": "openBrowser",
-			"protocol": "http"
+		"8000": {
+			"label": "Zensical docs",
+			"onAutoForward": "openBrowserOnce"
 		},
-		"6379": {
-			"label": "Valkey",
-			"onAutoForward": "silent"
+		"8088": {
+			"label": "Fluxer dev proxy",
+			"onAutoForward": "notify"
 		},
-		"7700": {
-			"label": "Meilisearch",
-			"onAutoForward": "silent"
+		"3000": {
+			"label": "Rspack dev server"
+		},
+		"3020": {
+			"label": "Fluxer admin"
+		},
+		"8100": {
+			"label": "Fluxer Rust service health"
+		},
+		"3900": {
+			"label": "SeaweedFS S3"
+		},
+		"8888": {
+			"label": "SeaweedFS filer"
+		},
+		"9333": {
+			"label": "SeaweedFS master"
+		},
+		"9340": {
+			"label": "SeaweedFS volume"
+		},
+		"23646": {
+			"label": "SeaweedFS admin"
 		},
 		"7880": {
-			"label": "LiveKit",
-			"onAutoForward": "silent"
+			"label": "LiveKit"
 		},
-		"9229": {
-			"label": "Node.js Debugger",
-			"onAutoForward": "silent"
+		"9200": {
+			"label": "Elasticsearch"
 		}
 	},
-
+	"postCreateCommand": "find /workspaces/fluxer -maxdepth 4 -type d -name node_modules -prune -exec sudo chown -R vscode:vscode {} + && sudo chown -R vscode:vscode /home/vscode/.local/share/pnpm && cargo run -p fluxer-dev -- bootstrap && bash /workspaces/fluxer/fluxer_docs/serve.sh --bootstrap",
+	"postStartCommand": "cargo run -p fluxer-dev -- post-start && bash /workspaces/fluxer/fluxer_docs/serve.sh --daemon",
 	"customizations": {
 		"vscode": {
 			"extensions": [
-				"TypeScriptTeam.native-preview",
 				"biomejs.biome",
-				"clinyong.vscode-css-modules",
+				"rust-lang.rust-analyzer",
+				"tamasfe.even-better-toml",
+				"TypeScriptTeam.native-preview",
+				"unifiedjs.vscode-mdx",
 				"pgourlain.erlang",
-				"golang.go",
-				"rust-lang.rust-analyzer"
-			],
-			"settings": {
-				"typescript.preferences.includePackageJsonAutoImports": "auto",
-				"typescript.suggest.autoImports": true,
-				"typescript.experimental.useTsgo": true
-			}
+				"clinyong.vscode-css-modules"
+			]
 		}
 	}
 }

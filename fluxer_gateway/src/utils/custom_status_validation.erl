@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(custom_status_validation).
+-typing([eqwalizer]).
 
 -export([validate/2]).
 
@@ -45,7 +31,7 @@ build_custom_status_payload(CustomStatus) ->
     lists:foldl(
         fun
             ({_Key, undefined}, Acc) -> Acc;
-            ({Key, Value}, Acc) -> maps:put(Key, Value, Acc)
+            ({Key, Value}, Acc) -> Acc#{Key => Value}
         end,
         #{},
         Fields

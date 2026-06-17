@@ -1,0 +1,218 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+pub const KEYSYM_TABLE: &[(u32, &str)] = &[
+    (0xff1b, "Escape"),
+    (0xffbe, "F1"),
+    (0xffbf, "F2"),
+    (0xffc0, "F3"),
+    (0xffc1, "F4"),
+    (0xffc2, "F5"),
+    (0xffc3, "F6"),
+    (0xffc4, "F7"),
+    (0xffc5, "F8"),
+    (0xffc6, "F9"),
+    (0xffc7, "F10"),
+    (0xffc8, "F11"),
+    (0xffc9, "F12"),
+    (0xffca, "F13"),
+    (0xffcb, "F14"),
+    (0xffcc, "F15"),
+    (0xffcd, "F16"),
+    (0xffce, "F17"),
+    (0xffcf, "F18"),
+    (0xffd0, "F19"),
+    (0xffd1, "F20"),
+    (0xffd2, "F21"),
+    (0xffd3, "F22"),
+    (0xffd4, "F23"),
+    (0xffd5, "F24"),
+    (0xff61, "PrintScreen"),
+    (0xff14, "ScrollLock"),
+    (0xff13, "Pause"),
+    (0xff7f, "NumLock"),
+    (0xff67, "ContextMenu"),
+    (0x0060, "Backquote"),
+    (0x007e, "Backquote"),
+    (0x0031, "1"),
+    (0x0032, "2"),
+    (0x0033, "3"),
+    (0x0034, "4"),
+    (0x0035, "5"),
+    (0x0036, "6"),
+    (0x0037, "7"),
+    (0x0038, "8"),
+    (0x0039, "9"),
+    (0x0030, "0"),
+    (0x002d, "Minus"),
+    (0x003d, "Equal"),
+    (0xff08, "Backspace"),
+    (0xff09, "Tab"),
+    (0x0071, "Q"),
+    (0x0077, "W"),
+    (0x0065, "E"),
+    (0x0072, "R"),
+    (0x0074, "T"),
+    (0x0079, "Y"),
+    (0x0075, "U"),
+    (0x0069, "I"),
+    (0x006f, "O"),
+    (0x0070, "P"),
+    (0x005b, "BracketLeft"),
+    (0x005d, "BracketRight"),
+    (0x005c, "Backslash"),
+    (0xffe5, "CapsLock"),
+    (0x0061, "A"),
+    (0x0073, "S"),
+    (0x0064, "D"),
+    (0x0066, "F"),
+    (0x0067, "G"),
+    (0x0068, "H"),
+    (0x006a, "J"),
+    (0x006b, "K"),
+    (0x006c, "L"),
+    (0x003b, "Semicolon"),
+    (0x0027, "Quote"),
+    (0xff0d, "Enter"),
+    (0xffe1, "ShiftLeft"),
+    (0x007a, "Z"),
+    (0x0078, "X"),
+    (0x0063, "C"),
+    (0x0076, "V"),
+    (0x0062, "B"),
+    (0x006e, "N"),
+    (0x006d, "M"),
+    (0x002c, "Comma"),
+    (0x002e, "Period"),
+    (0x002f, "Slash"),
+    (0xffe2, "ShiftRight"),
+    (0xffe3, "ControlLeft"),
+    (0xffeb, "MetaLeft"),
+    (0xffe9, "AltLeft"),
+    (0x0020, "Space"),
+    (0xffea, "AltRight"),
+    (0xffec, "MetaRight"),
+    (0xffe4, "ControlRight"),
+    (0xff80, "Space"),
+    (0xff89, "Tab"),
+    (0xff8d, "NumpadEnter"),
+    (0xffbd, "NumpadEqual"),
+    (0xffaa, "NumpadMultiply"),
+    (0xffab, "NumpadAdd"),
+    (0xffac, "NumpadComma"),
+    (0xffad, "NumpadSubtract"),
+    (0xffae, "NumpadDecimal"),
+    (0xffaf, "NumpadDivide"),
+    (0xffb0, "Numpad0"),
+    (0xffb1, "Numpad1"),
+    (0xffb2, "Numpad2"),
+    (0xffb3, "Numpad3"),
+    (0xffb4, "Numpad4"),
+    (0xffb5, "Numpad5"),
+    (0xffb6, "Numpad6"),
+    (0xffb7, "Numpad7"),
+    (0xffb8, "Numpad8"),
+    (0xffb9, "Numpad9"),
+    (0xff51, "ArrowLeft"),
+    (0xff52, "ArrowUp"),
+    (0xff53, "ArrowRight"),
+    (0xff54, "ArrowDown"),
+    (0xff63, "Insert"),
+    (0xffff, "Delete"),
+    (0xff50, "Home"),
+    (0xff57, "End"),
+    (0xff55, "PageUp"),
+    (0xff56, "PageDown"),
+    (0x1008ff12, "AudioVolumeMute"),
+    (0x1008ff11, "AudioVolumeDown"),
+    (0x1008ff13, "AudioVolumeUp"),
+    (0x1008ff17, "MediaTrackNext"),
+    (0x1008ff16, "MediaTrackPrevious"),
+    (0x1008ff15, "MediaStop"),
+    (0x1008ff14, "MediaPlayPause"),
+    (0x1008ff26, "BrowserBack"),
+    (0x1008ff27, "BrowserForward"),
+    (0x1008ff29, "BrowserRefresh"),
+    (0x1008ff28, "BrowserStop"),
+    (0x1008ff1b, "BrowserSearch"),
+    (0x1008ff30, "BrowserFavorites"),
+    (0x1008ff18, "BrowserHome"),
+    (0x1008ff19, "LaunchMail"),
+    (0x1008ff32, "LaunchMediaPlayer"),
+    (0x1008ff41, "LaunchApp1"),
+    (0x1008ff42, "LaunchApp2"),
+    (0x1008ff2a, "Power"),
+    (0x1008ff2f, "Sleep"),
+    (0x1008ff2b, "WakeUp"),
+    (0xff23, "Convert"),
+    (0xff22, "NonConvert"),
+    (0xff2d, "KanaMode"),
+    (0xff31, "Lang1"),
+    (0xff34, "Lang2"),
+];
+
+pub fn keysym_to_name(keysym: u32) -> Option<&'static str> {
+    KEYSYM_TABLE
+        .iter()
+        .find(|(sym, _)| *sym == keysym)
+        .map(|(_, name)| *name)
+}
+
+pub fn fallback_name(keysym: u32) -> String {
+    format!("Key{keysym}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn common_letters_map_to_single_letter_names() {
+        assert_eq!(keysym_to_name(0x0061), Some("A"));
+        assert_eq!(keysym_to_name(0x006d), Some("M"));
+        assert_eq!(keysym_to_name(0x007a), Some("Z"));
+    }
+
+    #[test]
+    fn modifier_keysyms_produce_side_distinguished_names() {
+        assert_eq!(keysym_to_name(0xffe1), Some("ShiftLeft"));
+        assert_eq!(keysym_to_name(0xffe2), Some("ShiftRight"));
+        assert_eq!(keysym_to_name(0xffe3), Some("ControlLeft"));
+        assert_eq!(keysym_to_name(0xffe9), Some("AltLeft"));
+        assert_eq!(keysym_to_name(0xffeb), Some("MetaLeft"));
+    }
+
+    #[test]
+    fn function_keys_f1_through_f12() {
+        assert_eq!(keysym_to_name(0xffbe), Some("F1"));
+        assert_eq!(keysym_to_name(0xffc9), Some("F12"));
+        assert_eq!(keysym_to_name(0xff13), Some("Pause"));
+        assert_eq!(keysym_to_name(0xffca), Some("F13"));
+        assert_eq!(keysym_to_name(0xffb0), Some("Numpad0"));
+        assert_eq!(keysym_to_name(0x1008ff12), Some("AudioVolumeMute"));
+        assert_eq!(keysym_to_name(0x1008ff41), Some("LaunchApp1"));
+    }
+
+    #[test]
+    fn arrows_and_editing_keys_round_trip() {
+        assert_eq!(keysym_to_name(0xff51), Some("ArrowLeft"));
+        assert_eq!(keysym_to_name(0xff56), Some("PageDown"));
+        assert_eq!(keysym_to_name(0xffff), Some("Delete"));
+    }
+
+    #[test]
+    fn unknown_keysym_falls_back_to_key_n() {
+        assert!(keysym_to_name(0x12345).is_none());
+        assert_eq!(fallback_name(0x12345), "Key74565");
+    }
+
+    #[test]
+    fn no_distinct_names_share_a_keysym() {
+        for (i, (sym_i, name_i)) in KEYSYM_TABLE.iter().enumerate() {
+            for (sym_j, name_j) in &KEYSYM_TABLE[i + 1..] {
+                if sym_i == sym_j {
+                    assert_eq!(name_i, name_j, "duplicate keysym {sym_i:#x}");
+                }
+            }
+        }
+    }
+}

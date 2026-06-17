@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(guild_user_data).
+-typing([eqwalizer]).
 
 -export([
     update_user_data/2,
@@ -23,6 +9,8 @@
     handle_user_data_update/3,
     check_user_data_differs/2
 ]).
+
+-export_type([guild_state/0, user_id/0]).
 
 -type guild_state() :: map().
 -type user_id() :: integer().
@@ -34,30 +22,41 @@
 
 -spec update_user_data(map(), guild_state()) -> {noreply, guild_state()}.
 update_user_data(EventData, State) ->
-    UserId = utils:binary_to_integer_safe(maps:get(<<"id">>, EventData)),
-    Data = maps:get(data, State),
-    Members = guild_data_index:member_map(Data),
-    UpdatedMembers = maps:map(
+    case snowflake_id:parse_optional(maps:get(<<"id">>, EventData, undefined)) of
+        undefined ->
+            {noreply, State};
+        UserId ->
+            Data = maps:get(data, State),
+            Members = guild_data_index:member_map(Data),
+            Raw = guild_data_normalize:member(#{<<"user">> => EventData}),
+            NormalizedUserData = ensure_map(Raw),
+            #{<<"user">> := UserData} = NormalizedUserData,
+            UpdatedMembers = update_members_user_data(Members, UserId, ensure_map(UserData)),
+            UpdatedData = guild_data_index:put_member_map(UpdatedMembers, Data),
+            UpdatedState = State#{data => UpdatedData},
+            dispatch_member_update_if_found(UserId, UpdatedState),
+            {noreply, UpdatedState}
+    end.
+
+-spec update_members_user_data(map(), user_id(), map()) -> map().
+update_members_user_data(Members, UserId, UserData) ->
+    maps:map(
         fun(_MemberUserId, Member) ->
-            maybe_update_member_user(Member, UserId, EventData)
+            maybe_update_member_user(Member, UserId, UserData)
         end,
         Members
-    ),
-    UpdatedData = guild_data_index:put_member_map(UpdatedMembers, Data),
-    UpdatedState = maps:put(data, UpdatedData, State),
-    dispatch_member_update_if_found(UserId, UpdatedState),
-    {noreply, UpdatedState}.
+    ).
 
 -spec maybe_update_member_user(member(), user_id(), map()) -> member().
 maybe_update_member_user(Member, UserId, EventData) ->
     MUser = maps:get(<<"user">>, Member, #{}),
     MemberId =
         case is_map(MUser) of
-            true -> utils:binary_to_integer_safe(maps:get(<<"id">>, MUser, <<"0">>));
+            true -> snowflake_id:parse_optional(maps:get(<<"id">>, MUser, undefined));
             false -> undefined
         end,
     case MemberId =:= UserId of
-        true -> maps:put(<<"user">>, EventData, Member);
+        true -> Member#{<<"user">> => EventData};
         false -> Member
     end.
 
@@ -74,27 +73,26 @@ handle_user_data_update(UserId, UserData, State) ->
         undefined ->
             State;
         Member ->
-            CurrentUserData = maps:get(<<"user">>, Member, #{}),
-            case check_user_data_differs(CurrentUserData, UserData) of
-                false ->
-                    State;
-                true ->
-                    apply_user_data_update(UserId, UserData, State)
-            end
+            maybe_apply_changed_user_data(UserId, UserData, Member, State)
+    end.
+
+-spec maybe_apply_changed_user_data(user_id(), map(), member(), guild_state()) -> guild_state().
+maybe_apply_changed_user_data(UserId, UserData, Member, State) ->
+    CurrentUserData = maps:get(<<"user">>, Member, #{}),
+    case check_user_data_differs(CurrentUserData, UserData) of
+        false -> State;
+        true -> apply_user_data_update(UserId, UserData, State)
     end.
 
 -spec apply_user_data_update(user_id(), map(), guild_state()) -> guild_state().
 apply_user_data_update(UserId, UserData, State) ->
     Data = maps:get(data, State),
     Members = guild_data_index:member_map(Data),
-    UpdatedMembers = maps:map(
-        fun(_MemberUserId, Member) ->
-            maybe_update_member_user(Member, UserId, UserData)
-        end,
-        Members
-    ),
+    NormalizedUserData = ensure_map(guild_data_normalize:member(#{<<"user">> => UserData})),
+    #{<<"user">> := UpdatedUserData} = NormalizedUserData,
+    UpdatedMembers = update_members_user_data(Members, UserId, ensure_map(UpdatedUserData)),
     UpdatedData = guild_data_index:put_member_map(UpdatedMembers, Data),
-    UpdatedState = maps:put(data, UpdatedData, State),
+    UpdatedState = State#{data => UpdatedData},
     dispatch_guild_member_update(UserId, UpdatedState),
     UpdatedState.
 
@@ -105,7 +103,7 @@ dispatch_guild_member_update(UserId, State) ->
             ok;
         M ->
             GuildId = maps:get(id, State),
-            MemberUpdateData = maps:put(<<"guild_id">>, integer_to_binary(GuildId), M),
+            MemberUpdateData = M#{<<"guild_id">> => integer_to_binary(GuildId)},
             gen_server:cast(
                 self(),
                 {dispatch, #{event => guild_member_update, data => MemberUpdateData}}
@@ -124,22 +122,41 @@ maybe_update_cached_user_data(Event, EventData, State) when
         undefined ->
             State;
         AuthorData ->
-            UserId = utils:binary_to_integer_safe(maps:get(<<"id">>, AuthorData, <<"0">>)),
-            case guild_permissions:find_member_by_user_id(UserId, State) of
-                undefined ->
-                    State;
-                Member ->
-                    CurrentUserData = maps:get(<<"user">>, Member, #{}),
-                    case check_user_data_differs(CurrentUserData, AuthorData) of
-                        true ->
-                            handle_user_data_update(UserId, AuthorData, State);
-                        false ->
-                            State
-                    end
-            end
+            maybe_update_author_data(AuthorData, State)
     end;
 maybe_update_cached_user_data(_, _, State) ->
     State.
+
+-spec maybe_update_author_data(map(), guild_state()) -> guild_state().
+maybe_update_author_data(AuthorData, State) ->
+    case snowflake_id:parse_optional(maps:get(<<"id">>, AuthorData, undefined)) of
+        undefined ->
+            State;
+        UserId ->
+            maybe_update_known_member(UserId, AuthorData, State)
+    end.
+
+-spec maybe_update_known_member(user_id(), map(), guild_state()) -> guild_state().
+maybe_update_known_member(UserId, AuthorData, State) ->
+    case guild_permissions:find_member_by_user_id(UserId, State) of
+        undefined ->
+            State;
+        Member ->
+            maybe_handle_changed_author_data(UserId, AuthorData, Member, State)
+    end.
+
+-spec maybe_handle_changed_author_data(user_id(), map(), member(), guild_state()) ->
+    guild_state().
+maybe_handle_changed_author_data(UserId, AuthorData, Member, State) ->
+    CurrentUserData = maps:get(<<"user">>, Member, #{}),
+    case check_user_data_differs(CurrentUserData, AuthorData) of
+        true -> handle_user_data_update(UserId, AuthorData, State);
+        false -> State
+    end.
+
+-spec ensure_map(term()) -> map().
+ensure_map(M) when is_map(M) -> M;
+ensure_map(_) -> #{}.
 
 -ifdef(TEST).
 
@@ -158,6 +175,22 @@ handle_user_data_update_no_change_test() ->
     NewState = handle_user_data_update(100, UserData, State),
     ?assertEqual(State, NewState).
 
+message_create_equivalent_author_data_does_not_dispatch_member_update_test() ->
+    drain_test_mailbox(),
+    State = normalized_test_state(),
+    Author = #{
+        <<"id">> => <<"100">>,
+        <<"username">> => <<"alice">>,
+        <<"discriminator">> => <<"0001">>,
+        <<"global_name">> => null,
+        <<"avatar">> => null,
+        <<"avatar_color">> => null,
+        <<"flags">> => 0
+    },
+    NewState = maybe_update_cached_user_data(message_create, #{<<"author">> => Author}, State),
+    ?assertEqual(State, NewState),
+    assert_no_member_update_dispatch().
+
 check_user_data_differs_test() ->
     Current = #{<<"username">> => <<"alice">>},
     Same = #{<<"username">> => <<"alice">>},
@@ -174,5 +207,40 @@ test_state() ->
             }
         }
     }.
+
+normalized_test_state() ->
+    #{
+        id => 42,
+        data => guild_data_index:put_member(
+            #{
+                <<"user">> => #{
+                    <<"id">> => <<"100">>,
+                    <<"username">> => <<"alice">>,
+                    <<"discriminator">> => <<"0001">>,
+                    <<"global_name">> => null,
+                    <<"avatar">> => null,
+                    <<"avatar_color">> => null,
+                    <<"flags">> => 0
+                },
+                <<"roles">> => []
+            },
+            #{}
+        )
+    }.
+
+drain_test_mailbox() ->
+    receive
+        _ -> drain_test_mailbox()
+    after 0 ->
+        ok
+    end.
+
+assert_no_member_update_dispatch() ->
+    receive
+        {'$gen_cast', {dispatch, #{event := guild_member_update}}} ->
+            ?assert(false)
+    after 50 ->
+        ok
+    end.
 
 -endif.

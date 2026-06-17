@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(fluxer_gateway_crypto).
+-typing([eqwalizer]).
 
 -export([
     init/0,
@@ -30,6 +16,8 @@
     wrap_encrypted_frame/1
 ]).
 
+-export_type([keypair/0, crypto_state/0]).
+
 -define(KEYPAIR_KEY, {?MODULE, instance_keypair}).
 -define(ENCRYPTED_FRAME_PREFIX, 16#FE).
 -define(NONCE_SIZE, 12).
@@ -42,8 +30,6 @@
     send_counter := non_neg_integer(),
     recv_counter := non_neg_integer()
 }.
-
--export_type([keypair/0, crypto_state/0]).
 
 -spec init() -> ok.
 init() ->
@@ -58,8 +44,16 @@ init() ->
 
 -spec generate_keypair() -> keypair().
 generate_keypair() ->
-    {Public, Private} = crypto:generate_key(ecdh, x25519),
+    {Public0, Private0} = crypto:generate_key(ecdh, x25519),
+    Public = key_material(Public0),
+    Private = key_material(Private0),
     #{public => Public, private => Private}.
+
+-spec key_material(term()) -> binary().
+key_material(Value) when is_binary(Value) ->
+    Value;
+key_material(Value) ->
+    error({invalid_key_material, Value}).
 
 -spec get_public_key() -> binary() | undefined.
 get_public_key() ->
@@ -90,9 +84,8 @@ new_crypto_state(SharedSecret) when byte_size(SharedSecret) =:= ?KEY_SIZE ->
         recv_counter => 0
     }.
 
--spec encrypt(binary(), crypto_state()) ->
-    {ok, binary(), crypto_state()} | {error, term()}.
-encrypt(Plaintext, State = #{shared_secret := Key, send_counter := Counter}) ->
+-spec encrypt(binary(), crypto_state()) -> {ok, binary(), crypto_state()} | {error, term()}.
+encrypt(Plaintext, #{shared_secret := Key, send_counter := Counter} = State) ->
     try
         Nonce = counter_to_nonce(Counter),
         AAD = <<>>,
@@ -113,22 +106,26 @@ encrypt(Plaintext, State = #{shared_secret := Key, send_counter := Counter}) ->
             {error, {encrypt_failed, Reason}}
     end.
 
--spec decrypt(binary(), crypto_state()) ->
-    {ok, binary(), crypto_state()} | {error, term()}.
-decrypt(Data, State = #{shared_secret := Key, recv_counter := Counter}) ->
+-spec decrypt(binary(), crypto_state()) -> {ok, binary(), crypto_state()} | {error, term()}.
+decrypt(Data, #{shared_secret := Key, recv_counter := Counter} = State) ->
     MinSize = ?NONCE_SIZE + ?TAG_SIZE,
     case byte_size(Data) > MinSize of
         false ->
             {error, {invalid_encrypted_data, too_short}};
         true ->
-            <<Nonce:?NONCE_SIZE/binary, Tag:?TAG_SIZE/binary, Ciphertext/binary>> = Data,
-            ExpectedNonce = counter_to_nonce(Counter),
-            case validate_nonce(Nonce, ExpectedNonce, Counter) of
-                {ok, ActualCounter} ->
-                    do_decrypt(Ciphertext, Key, Nonce, Tag, State, ActualCounter);
-                {error, Reason} ->
-                    {error, Reason}
-            end
+            decrypt_sized_data(Data, Key, Counter, State)
+    end.
+
+-spec decrypt_sized_data(binary(), binary(), non_neg_integer(), crypto_state()) ->
+    {ok, binary(), crypto_state()} | {error, term()}.
+decrypt_sized_data(Data, Key, Counter, State) ->
+    <<Nonce:?NONCE_SIZE/binary, Tag:?TAG_SIZE/binary, Ciphertext/binary>> = Data,
+    ExpectedNonce = counter_to_nonce(Counter),
+    case validate_nonce(Nonce, ExpectedNonce, Counter) of
+        {ok, ActualCounter} ->
+            do_decrypt(Ciphertext, Key, Nonce, Tag, State, ActualCounter);
+        {error, Reason} ->
+            {error, Reason}
     end.
 
 -spec do_decrypt(binary(), binary(), binary(), binary(), crypto_state(), non_neg_integer()) ->
@@ -136,15 +133,17 @@ decrypt(Data, State = #{shared_secret := Key, recv_counter := Counter}) ->
 do_decrypt(Ciphertext, Key, Nonce, Tag, State, ActualCounter) ->
     AAD = <<>>,
     try
-        case crypto:crypto_one_time_aead(
-            aes_256_gcm,
-            Key,
-            Nonce,
-            Ciphertext,
-            AAD,
-            Tag,
-            false
-        ) of
+        case
+            crypto:crypto_one_time_aead(
+                aes_256_gcm,
+                Key,
+                Nonce,
+                Ciphertext,
+                AAD,
+                Tag,
+                false
+            )
+        of
             Plaintext when is_binary(Plaintext) ->
                 NewState = State#{recv_counter => ActualCounter + 1},
                 {ok, Plaintext, NewState};
@@ -252,7 +251,8 @@ decrypt_tampered_test() ->
     Secret = crypto:strong_rand_bytes(?KEY_SIZE),
     State = new_crypto_state(Secret),
     {ok, Ciphertext, _} = encrypt(<<"hello">>, State),
-    Tampered = <<(binary:first(Ciphertext) bxor 1), (binary:part(Ciphertext, 1, byte_size(Ciphertext) - 1))/binary>>,
+    Rest = binary:part(Ciphertext, 1, byte_size(Ciphertext) - 1),
+    Tampered = <<(binary:first(Ciphertext) bxor 1), Rest/binary>>,
     Result = decrypt(Tampered, State),
     ?assertMatch({error, _}, Result).
 
@@ -286,8 +286,12 @@ init_creates_keypair_test() ->
     persistent_term:erase(?KEYPAIR_KEY),
     ok = init(),
     Public = get_public_key(),
-    ?assert(is_binary(Public)),
-    ?assertEqual(?KEY_SIZE, byte_size(Public)),
+    case Public of
+        PublicBin when is_binary(PublicBin) ->
+            ?assertEqual(?KEY_SIZE, byte_size(PublicBin));
+        undefined ->
+            ?assert(false)
+    end,
     persistent_term:erase(?KEYPAIR_KEY).
 
 init_idempotent_test() ->

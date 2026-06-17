@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import {defineStaticLocaleMessages} from '@fluxer/i18n/src/runtime/MessageCatalogTypes';
+
+export const CONTENT_I18N_MESSAGES = {
+	'billing.eu_withdrawal_waiver_checkout':
+		'If I am an EU/EEA consumer, I expressly consent to {product_name} {premium_tier_name} digital content being provided immediately and acknowledge that I lose my statutory withdrawal right once access is provided. This does not affect other mandatory consumer rights. See the [Terms of Service]({terms_url}).',
+	'bulk_message_deletion.complete':
+		'We finished deleting your messages. We removed {message_count, plural, =0 {0 messages} one {# message} other {# messages}} from {channel_count, plural, =0 {0 places} one {# place} other {# places}}.',
+	'content.virus_detected': 'That file was flagged as potentially unsafe and has been removed.',
+	'guild.bulk_create.emoji_limit': 'Maximum emojis reached ({limit}).',
+	'guild.bulk_create.sticker_limit': 'Maximum stickers reached ({limit}).',
+	'guild.bulk_create.unknown_error': 'Unknown error.',
+	'guild.default_category_text': 'Text Channels',
+	'guild.default_category_voice': 'Voice Channels',
+	'guild.default_channel_text': 'general',
+	'guild.default_channel_voice': 'General',
+} as const;
+
+export type ContentI18nCatalog = typeof CONTENT_I18N_MESSAGES;
+export type ContentI18nKey = keyof ContentI18nCatalog;
+
+export const defineContentI18nLocaleMessages = defineStaticLocaleMessages<ContentI18nCatalog>();

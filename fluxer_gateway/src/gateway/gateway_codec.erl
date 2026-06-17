@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(gateway_codec).
+-typing([eqwalizer]).
 
 -export([
     encode/2,
@@ -26,7 +12,7 @@
 -type encoding() :: json.
 -type frame_type() :: text | binary.
 
--export_type([encoding/0]).
+-export_type([encoding/0, frame_type/0]).
 
 -spec parse_encoding(binary() | undefined) -> encoding().
 parse_encoding(_) ->
@@ -46,7 +32,10 @@ encode(Message, json) ->
 decode(Data, json) ->
     try
         Decoded = json:decode(Data),
-        {ok, Decoded}
+        case Decoded of
+            M when is_map(M) -> {ok, M};
+            _ -> {error, {decode_failed, not_a_map}}
+        end
     catch
         _:Reason ->
             {error, {decode_failed, Reason}}
@@ -68,11 +57,12 @@ encode_json_test_() ->
     Message = #{<<"op">> => 0, <<"d">> => #{<<"test">> => true}},
     [
         ?_assertMatch({ok, _, text}, encode(Message, json)),
-        ?_test(begin
-            {ok, Encoded, text} = encode(Message, json),
-            ?assert(is_binary(Encoded))
-        end)
+        ?_test(assert_encode_json_is_binary(Message))
     ].
+
+assert_encode_json_is_binary(Message) ->
+    {ok, Encoded, text} = encode(Message, json),
+    ?assert(is_binary(Encoded)).
 
 encode_empty_map_test() ->
     {ok, Encoded, text} = encode(#{}, json),
@@ -82,18 +72,19 @@ encode_nested_test() ->
     Message = #{<<"a">> => #{<<"b">> => #{<<"c">> => 1}}},
     {ok, Encoded, text} = encode(Message, json),
     ?assert(is_binary(Encoded)),
-    {ok, Decoded} = decode(Encoded, json),
+    {ok, Decoded} = decode(iolist_to_binary(Encoded), json),
     ?assertEqual(Message, Decoded).
 
 decode_json_test_() ->
     Data = <<"{\"op\":0,\"d\":{\"test\":true}}">>,
     [
         ?_assertMatch({ok, _}, decode(Data, json)),
-        ?_test(begin
-            {ok, Decoded} = decode(Data, json),
-            ?assertEqual(0, maps:get(<<"op">>, Decoded))
-        end)
+        ?_test(assert_decode_json_op(Data))
     ].
+
+assert_decode_json_op(Data) ->
+    {ok, Decoded} = decode(Data, json),
+    ?assertEqual(0, maps:get(<<"op">>, Decoded)).
 
 decode_invalid_json_test() ->
     ?assertMatch({error, {decode_failed, _}}, decode(<<"not json">>, json)).
@@ -109,12 +100,13 @@ roundtrip_json_test_() ->
         #{<<"list">> => [1, 2, 3], <<"bool">> => true, <<"null">> => null}
     ],
     [
-        ?_test(begin
-            {ok, Encoded, _} = encode(Msg, json),
-            {ok, Decoded} = decode(iolist_to_binary(Encoded), json),
-            ?assertEqual(Msg, Decoded)
-        end)
+        ?_test(assert_roundtrip_json(Msg))
      || Msg <- Messages
     ].
+
+assert_roundtrip_json(Msg) ->
+    {ok, Encoded, _} = encode(Msg, json),
+    {ok, Decoded} = decode(iolist_to_binary(Encoded), json),
+    ?assertEqual(Msg, Decoded).
 
 -endif.

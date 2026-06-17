@@ -1,3 +1,4 @@
+% SPDX-License-Identifier: AGPL-3.0-or-later
 {application, fluxer_gateway, [
     {description, "Fluxer Gateway"},
     {vsn, "0.0.0"},
@@ -11,9 +12,11 @@
         ssl,
         inets,
         jose,
+        ranch,
         cowboy,
         ezstd,
-        base64url
+        base64url,
+        enats
     ]},
     {env, []},
     {modules, []},

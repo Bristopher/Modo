@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+use crate::api::generated::types as generated_types;
+
+use super::client::{AdminApiClient, ApiResult};
+
+impl AdminApiClient {
+    pub async fn purge_assets(&self, ids: &[String]) -> ApiResult<serde_json::Value> {
+        let body = generated_types::PurgeGuildAssetsRequest { ids: ids.to_vec() };
+        let response = self
+            .generated()
+            .purge_guild_assets(&body)
+            .await
+            .map_err(|e| self.generated_error(e))?;
+        self.generated_value(response.into_inner())
+    }
+}

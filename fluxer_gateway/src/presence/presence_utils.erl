@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(presence_utils).
+-typing([eqwalizer]).
 
 -export([
     collect_guild_member_presences/1,
@@ -26,6 +12,8 @@
     send_presence_bulk/4
 ]).
 
+-export_type([user_id/0]).
+
 -define(PRESENCE_BATCH_SIZE, 500).
 
 -type user_id() :: integer().
@@ -33,13 +21,8 @@
 -spec collect_guild_member_presences(map()) -> [map()].
 collect_guild_member_presences(GuildState) ->
     MemberIds = collect_guild_member_ids(GuildState),
-    case MemberIds of
-        [] ->
-            [];
-        _ ->
-            Presences = presence_cache:bulk_get(MemberIds),
-            [P || P <- Presences, is_visible_presence(P)]
-    end.
+    Presences = safe_bulk_get(MemberIds),
+    [P || P <- Presences, is_visible_presence(P)].
 
 -spec collect_guild_member_ids(map()) -> [user_id()].
 collect_guild_member_ids(GuildState) ->
@@ -57,69 +40,92 @@ is_visible_presence(Presence) ->
     Status =/= <<"offline">> andalso Status =/= <<"invisible">>.
 
 -spec batch_presences([map()]) -> [[map()]].
-batch_presences([]) ->
-    [];
-batch_presences(Presences) ->
-    batch_presences(Presences, []).
-
--spec batch_presences([map()], [[map()]]) -> [[map()]].
-batch_presences([], Acc) ->
-    lists:reverse(Acc);
-batch_presences(Presences, Acc) ->
-    {Batch, Rest} = take_batch(Presences, ?PRESENCE_BATCH_SIZE),
-    batch_presences(Rest, [Batch | Acc]).
+batch_presences([]) -> [];
+batch_presences(Presences) -> batch_presences_acc(Presences, []).
 
 -spec send_presence_bulk(pid(), integer(), user_id(), [map()]) -> ok.
 send_presence_bulk(_Pid, _GuildId, _UserId, []) ->
     ok;
 send_presence_bulk(Pid, GuildId, UserId, Presences) ->
-    FilteredPresences = filter_self_presence(UserId, Presences),
-    case FilteredPresences of
-        [] ->
-            ok;
-        _ ->
-            Batches = batch_presences(FilteredPresences),
-            lists:foreach(
-                fun(Batch) ->
-                    BulkPayload = #{
-                        <<"guild_id">> => integer_to_binary(GuildId),
-                        <<"presences">> => Batch
-                    },
-                    gen_server:cast(Pid, {dispatch, presence_update_bulk, BulkPayload})
-                end,
-                Batches
-            )
-    end.
+    Filtered = filter_self_presence(UserId, Presences),
+    dispatch_batches(Pid, GuildId, Filtered).
+
+-spec batch_presences_acc([map()], [[map()]]) -> [[map()]].
+batch_presences_acc([], Acc) ->
+    lists:reverse(Acc);
+batch_presences_acc(Presences, Acc) ->
+    {Batch, Rest} = take_presence_batch(Presences, ?PRESENCE_BATCH_SIZE),
+    batch_presences_acc(Rest, [Batch | Acc]).
+
+-spec dispatch_batches(pid(), integer(), [map()]) -> ok.
+dispatch_batches(_Pid, _GuildId, []) ->
+    ok;
+dispatch_batches(Pid, GuildId, FilteredPresences) ->
+    Batches = batch_presences(FilteredPresences),
+    lists:foreach(
+        fun(Batch) -> dispatch_single_batch(Pid, GuildId, Batch) end,
+        Batches
+    ).
+
+-spec dispatch_single_batch(pid(), integer(), [map()]) -> ok.
+dispatch_single_batch(Pid, GuildId, Batch) ->
+    BulkPayload = #{
+        <<"guild_id">> => integer_to_binary(GuildId),
+        <<"presences">> => Batch
+    },
+    gateway_dispatch_relay:dispatch(Pid, presence_update_bulk, BulkPayload, GuildId).
 
 -spec get_members_from_guild_state(map()) -> [map()].
 get_members_from_guild_state(GuildState) ->
     case maps:get(data, GuildState, undefined) of
-        undefined ->
-            guild_data_index:member_values(GuildState);
-        Data ->
-            guild_data_index:member_values(Data)
+        undefined -> guild_data_index:member_values(GuildState);
+        Data -> guild_data_index:member_values(Data)
     end.
 
 -spec member_user_id(map()) -> user_id() | undefined.
 member_user_id(Member) ->
     User = maps:get(<<"user">>, Member, #{}),
-    map_utils:get_integer(User, <<"id">>, undefined).
+    user_id(User).
 
 -spec presence_user_id(map() | term()) -> user_id() | undefined.
 presence_user_id(P) when is_map(P) ->
     User = maps:get(<<"user">>, P, #{}),
-    map_utils:get_integer(User, <<"id">>, undefined);
+    user_id(User);
 presence_user_id(_) ->
     undefined.
 
--spec take_batch([T], pos_integer()) -> {[T], [T]} when T :: term().
-take_batch(List, N) when length(List) =< N ->
-    {List, []};
-take_batch(List, N) ->
-    {lists:sublist(List, N), lists:nthtail(N, List)}.
+-spec user_id(term()) -> user_id() | undefined.
+user_id(User) when is_map(User) ->
+    snowflake_id:parse_maybe(maps:get(<<"id">>, User, undefined));
+user_id(_) ->
+    undefined.
+
+-spec safe_bulk_get([user_id()]) -> [map()].
+safe_bulk_get(UserIds) ->
+    try presence_cache:bulk_get(UserIds) of
+        Presences -> [Presence || Presence <- Presences, is_map(Presence)]
+    catch
+        _:_ -> []
+    end.
+
+-spec take_presence_batch([map()], pos_integer()) -> {[map()], [map()]}.
+take_presence_batch(List, N) ->
+    safe_split(List, N).
+
+-spec safe_split([T], pos_integer()) -> {[T], [T]}.
+safe_split(List, N) ->
+    try lists:split(N, List) of
+        {Batch, Rest} -> {Batch, Rest}
+    catch
+        error:badarg -> {List, []}
+    end.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
+
+-spec take_batch([term()], pos_integer()) -> {[term()], [term()]}.
+take_batch(List, N) ->
+    safe_split(List, N).
 
 batch_presences_empty_test() ->
     ?assertEqual([], batch_presences([])).
@@ -181,6 +187,17 @@ collect_guild_member_ids_internal_format_test() ->
     Ids = collect_guild_member_ids(GuildState),
     ?assertEqual([100, 200], lists:sort(Ids)).
 
+collect_guild_member_ids_rejects_malformed_id_test() ->
+    GuildState = #{
+        data => #{
+            <<"members">> => [
+                #{<<"user">> => #{<<"id">> => <<"100">>}},
+                #{<<"user">> => #{<<"id">> => <<"001">>}}
+            ]
+        }
+    },
+    ?assertEqual([100], collect_guild_member_ids(GuildState)).
+
 collect_guild_member_ids_external_format_test() ->
     GuildState = #{
         <<"members">> => [
@@ -208,6 +225,7 @@ take_batch_split_test() ->
 
 presence_user_id_test() ->
     ?assertEqual(123, presence_user_id(#{<<"user">> => #{<<"id">> => <<"123">>}})),
+    ?assertEqual(undefined, presence_user_id(#{<<"user">> => #{<<"id">> => <<"001">>}})),
     ?assertEqual(undefined, presence_user_id(#{<<"user">> => #{}})),
     ?assertEqual(undefined, presence_user_id(#{})),
     ?assertEqual(undefined, presence_user_id(invalid)).

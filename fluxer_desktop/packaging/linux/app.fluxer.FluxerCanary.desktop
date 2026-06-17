@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[Desktop Entry]
+Name=Fluxer Canary
+GenericName=Instant Messenger
+Comment=Canary build of Fluxer
+Exec=app.fluxer.FluxerCanary %U
+TryExec=app.fluxer.FluxerCanary
+Icon=app.fluxer.FluxerCanary
+Type=Application
+Categories=Network;InstantMessaging;Chat;
+Keywords=chat;im;messaging;messenger;voip;voice;video;call;
+StartupWMClass=app.fluxer.FluxerCanary
+SingleMainWindow=true
+StartupNotify=true
+MimeType=x-scheme-handler/fluxer;
+Terminal=false
+X-GNOME-UsesNotifications=true
+Actions=open-settings;new-dm;
+
+[Desktop Action open-settings]
+Name=Open Settings
+Exec=app.fluxer.FluxerCanary --fluxer-task=open-settings %U
+
+[Desktop Action new-dm]
+Name=New Direct Message
+Exec=app.fluxer.FluxerCanary --fluxer-task=new-dm %U

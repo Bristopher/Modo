@@ -6,7 +6,8 @@
 		"indentStyle": "tab",
 		"lineWidth": 120,
 		"lineEnding": "lf",
-		"bracketSpacing": false
+		"bracketSpacing": false,
+		"includes": ["**", "!**/fluxer_app/src/features/theme/variables/ThemeVariableManifest.ts"]
 	},
 	"javascript": {
 		"formatter": {
@@ -128,18 +129,23 @@
 			"!**/build",
 			"fluxer_app/scripts/build",
 			"!**/dist",
-			"!**/fluxer_app/src/data/emojis.json",
-			"!**/fluxer_app/src/locales/*/messages.js",
+			"!**/fluxer_app/src/media/data/emojis.json",
+			"!**/fluxer_app/src/features/i18n/locales/*/messages.js",
+			"!**/fluxer_app/src/features/i18n/locales/*/messages.mjs",
 			"!**/fluxer_app/src/env.d.ts",
+			"!**/*.generated.*",
+			"!**/*.pb.*",
+			"!**/*_pb.*",
 			"!**/node_modules",
+			"!packages/schema/src/gen",
 			"!**/tailwind.css",
 			"!**/*.html",
 			"!**/*.module.css.d.ts",
-			"!**/fluxer_app/src/components/uikit/SVGMasks.tsx",
-			"!fluxer_marketing/public/static/app.css",
-			"!packages/marketing/public/static/app.css",
+			"!**/fluxer_app/src/features/ui/components/SVGMasks.tsx",
 			"!fluxer_static",
-			"!fluxer_docs/api-reference/openapi.json"
+			"!fluxer_admin/static/htmx.min.js",
+			"!fluxer_marketing/static/htmx.min.js",
+			"!fluxer_api/src/api/openapi/openapi.json"
 		],
 		"ignoreUnknown": true
 	}

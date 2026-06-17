@@ -1,0 +1,14 @@
+dictionary-eu@4.0.0 license notice
+
+The upstream package README states:
+
+Dictionary and affix file: GPL-2.0.
+Rest: MIT (c) Titus Wormer.
+
+Only `index.aff` and `index.dic` are vendored in this directory, so the
+dictionary and affix files are licensed under the GNU General Public License
+version 2.
+
+Source package: https://www.npmjs.com/package/dictionary-eu/v/4.0.0
+Upstream source: http://xuxen.eus/eu/home
+GPL-2.0 text: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html

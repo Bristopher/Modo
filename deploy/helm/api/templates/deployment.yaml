@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+{{include "fluxer.deployment" (dict "name" .Values.app.name "values" .Values.app "context" .)}}

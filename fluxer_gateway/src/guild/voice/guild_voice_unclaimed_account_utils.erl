@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(guild_voice_unclaimed_account_utils).
+-typing([eqwalizer]).
 
 -export([parse_unclaimed_error/1]).
 
@@ -24,20 +10,31 @@
 -endif.
 
 -spec parse_unclaimed_error(iodata() | term()) -> boolean().
-parse_unclaimed_error(Body) when is_binary(Body); is_list(Body) ->
-    try json:decode(iolist_to_binary(Body)) of
-        Map when is_map(Map) ->
-            case get_unclaimed_error_code(Map) of
-                Code when is_binary(Code) -> is_voice_unclaimed_error_code(Code);
-                _ -> false
-            end;
-        _ ->
-            false
-    catch
-        _:_ -> false
+parse_unclaimed_error(Body) when is_binary(Body) ->
+    decode_unclaimed_error(Body);
+parse_unclaimed_error(Body) when is_list(Body) ->
+    case guild_voice_connection_normalize:normalize_optional_binary(Body) of
+        Binary when is_binary(Binary) -> decode_unclaimed_error(Binary);
+        undefined -> false
     end;
 parse_unclaimed_error(_) ->
     false.
+
+-spec decode_unclaimed_error(binary()) -> boolean().
+decode_unclaimed_error(Body) ->
+    try json:decode(Body) of
+        Map when is_map(Map) -> has_unclaimed_error_code(Map);
+        _ -> false
+    catch
+        _:_ -> false
+    end.
+
+-spec has_unclaimed_error_code(map()) -> boolean().
+has_unclaimed_error_code(Map) ->
+    case get_unclaimed_error_code(Map) of
+        Code when is_binary(Code) -> is_voice_unclaimed_error_code(Code);
+        _ -> false
+    end.
 
 -spec get_unclaimed_error_code(map()) -> binary() | undefined.
 get_unclaimed_error_code(Map) when is_map(Map) ->
@@ -45,12 +42,14 @@ get_unclaimed_error_code(Map) when is_map(Map) ->
         Code when is_binary(Code) ->
             Code;
         _ ->
-            case maps:get(<<"error">>, Map, undefined) of
-                Error when is_map(Error) ->
-                    maps:get(<<"code">>, Error, undefined);
-                _ ->
-                    undefined
-            end
+            get_nested_unclaimed_error_code(Map)
+    end.
+
+-spec get_nested_unclaimed_error_code(map()) -> binary() | undefined.
+get_nested_unclaimed_error_code(Map) ->
+    case maps:get(<<"error">>, Map, undefined) of
+        Error when is_map(Error) -> maps:get(<<"code">>, Error, undefined);
+        _ -> undefined
     end.
 
 -spec is_voice_unclaimed_error_code(binary()) -> boolean().
@@ -71,7 +70,9 @@ parse_unclaimed_error_with_direct_code_test() ->
 
 parse_unclaimed_error_with_nested_code_test() ->
     Body = json:encode(#{
-        <<"error">> => #{<<"code">> => <<"UNCLAIMED_ACCOUNT_CANNOT_JOIN_ONE_ON_ONE_VOICE_CALLS">>}
+        <<"error">> => #{
+            <<"code">> => <<"UNCLAIMED_ACCOUNT_CANNOT_JOIN_ONE_ON_ONE_VOICE_CALLS">>
+        }
     }),
     ?assertEqual(true, parse_unclaimed_error(Body)).
 
@@ -92,7 +93,9 @@ is_voice_unclaimed_error_code_test() ->
     ),
     ?assertEqual(
         true,
-        is_voice_unclaimed_error_code(<<"UNCLAIMED_ACCOUNT_CANNOT_JOIN_ONE_ON_ONE_VOICE_CALLS">>)
+        is_voice_unclaimed_error_code(
+            <<"UNCLAIMED_ACCOUNT_CANNOT_JOIN_ONE_ON_ONE_VOICE_CALLS">>
+        )
     ),
     ?assertEqual(false, is_voice_unclaimed_error_code(<<"OTHER_ERROR">>)).
 

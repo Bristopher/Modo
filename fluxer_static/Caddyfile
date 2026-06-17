@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+{
+	auto_https off
+}
+
+:8080 {
+	root * /srv/fluxer-static
+	encode zstd gzip
+
+	@health path /_health
+	respond @health "OK" 200
+
+	@hidden path /.*
+	respond @hidden "Not Found" 404
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options DENY
+		Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+		Access-Control-Allow-Origin *
+		Cache-Control "public, max-age=3600, must-revalidate"
+		-Server
+	}
+
+	@hashed path /assets/*
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+	file_server
+}

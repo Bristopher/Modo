@@ -1,17 +1,10 @@
+% SPDX-License-Identifier: AGPL-3.0-or-later
 [
     {kernel, [
-        {logger_level, ${LOGGER_LEVEL}},
+        {logger_level, warning},
         {logger, [
-            {handler, default, logger_std_h, #{
-                level => ${LOGGER_LEVEL},
-                config => #{
-                    type => standard_io
-                }
-            }}
-        ]},
-        {inet_dist_use_interface, {0,0,0,0}},
-        {inet_backend, socket},
-        {inet_dist_listen_options, [{reuseaddr, true}]}
+            {handler, default, undefined}
+        ]}
     ]},
     {sasl, [
         {errlog_type, error}

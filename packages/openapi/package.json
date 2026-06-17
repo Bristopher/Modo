@@ -7,18 +7,20 @@
 		"./*": "./*"
 	},
 	"scripts": {
-		"generate": "tsx src/scripts/GenerateSpec.tsx",
+		"generate": "tsx src/scripts/GenerateSpec.ts",
 		"typecheck": "tsgo --noEmit",
-		"validate": "tsx src/scripts/GenerateSpec.tsx --validate-only"
+		"validate": "tsx src/scripts/GenerateSpec.ts --validate-only"
 	},
 	"dependencies": {
 		"@fluxer/constants": "workspace:*",
+		"@fluxer/errors": "workspace:*",
 		"ts-morph": "catalog:",
 		"zod": "catalog:"
 	},
 	"devDependencies": {
 		"@types/node": "catalog:",
 		"@typescript/native-preview": "catalog:",
+		"prettier": "^3.8.3",
 		"tsx": "catalog:"
 	}
 }

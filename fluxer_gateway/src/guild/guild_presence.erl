@@ -1,28 +1,21 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(guild_presence).
+-typing([eqwalizer]).
 
 -export([handle_bus_presence/3, send_cached_presence_to_session/3]).
 -export([broadcast_presence_update/3]).
+-export([sync_online_status/2]).
+-export([build_broadcast_snapshot/1]).
+
+-export_type([guild_state/0, user_id/0]).
 
 -type guild_state() :: map().
 -type member() :: map().
 -type user_id() :: integer().
+
+-define(HEAVY_MEMBER_DATA_KEYS, [<<"members">>, members_normalized, <<"member_role_index">>]).
+-define(PRESENCE_SNAPSHOT_TRIM_MEMBER_THRESHOLD_DEFAULT, 5000).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -31,326 +24,341 @@
 -spec handle_bus_presence(user_id(), map(), guild_state()) -> {noreply, guild_state()}.
 handle_bus_presence(UserId, Payload, State) ->
     case maps:get(<<"user_update">>, Payload, false) of
-        true ->
-            UserData = maps:get(<<"user">>, Payload, #{}),
-            UpdatedState = handle_user_data_update(UserId, UserData, State),
-            MemberData = find_member_by_user_id(UserId, UpdatedState),
-            case is_map(MemberData) of
-                true ->
-                    maybe_notify_very_large_guild_member_list({upsert_member, MemberData}, UpdatedState);
-                false ->
-                    maybe_notify_very_large_guild_member_list({notify_member_update, UserId}, UpdatedState)
-            end,
-            maybe_broadcast_member_list_updates(UserId, State, UpdatedState),
-            {noreply, UpdatedState};
-        false ->
-            Member = find_member_by_user_id(UserId, State),
-            case Member of
-                undefined ->
-                    {noreply, State};
-                _ ->
-                    StatusBin = maps:get(<<"status">>, Payload, <<"offline">>),
-                    NormalizedStatusBin = normalize_presence_status(StatusBin),
-                    Status = constants:status_type_atom(NormalizedStatusBin),
-                    Mobile = maps:get(<<"mobile">>, Payload, false),
-                    Afk = maps:get(<<"afk">>, Payload, false),
-                    MemberUser = maps:get(<<"user">>, Member, #{}),
-                    CustomStatus = maps:get(<<"custom_status">>, Payload, null),
-                    PresenceMap = presence_payload:build(
-                        MemberUser,
-                        NormalizedStatusBin,
-                        Mobile,
-                        Afk,
-                        CustomStatus
-                    ),
-                    StateWithPresence = store_member_presence(UserId, PresenceMap, State),
-                    broadcast_presence_update(UserId, PresenceMap, StateWithPresence),
-                    maybe_notify_very_large_guild_member_list(
-                        {presence_update, UserId, PresenceMap}, StateWithPresence
-                    ),
-                    maybe_broadcast_member_list_updates(UserId, State, StateWithPresence),
-                    StateAfterOffline =
-                        case Status of
-                            offline ->
-                                guild_sessions:handle_user_offline(UserId, StateWithPresence);
-                            _ ->
-                                StateWithPresence
-                        end,
-                    {noreply, StateAfterOffline}
-            end
+        true -> handle_user_update(UserId, Payload, State);
+        false -> handle_presence_update(UserId, Payload, State)
     end.
 
--spec maybe_broadcast_member_list_updates(user_id(), guild_state(), guild_state()) -> ok.
-maybe_broadcast_member_list_updates(UserId, OldState, UpdatedState) ->
-    case maps:get(very_large_guild_coordinator_pid, UpdatedState, undefined) of
-        Pid when is_pid(Pid) ->
-            ok;
-        _ ->
-            guild_member_list:broadcast_member_list_updates(UserId, OldState, UpdatedState)
+-spec handle_user_update(user_id(), map(), guild_state()) -> {noreply, guild_state()}.
+handle_user_update(UserId, Payload, State) ->
+    UserData = maps:get(<<"user">>, Payload, #{}),
+    UpdatedState = handle_user_data_update(UserId, UserData, State),
+    {ok, NewState} = guild_member_list:broadcast_member_list_updates(
+        UserId, State, UpdatedState
+    ),
+    {noreply, NewState}.
+
+-spec handle_presence_update(user_id(), map(), guild_state()) -> {noreply, guild_state()}.
+handle_presence_update(UserId, Payload, State) ->
+    case find_member_by_user_id(UserId, State) of
+        undefined -> {noreply, State};
+        Member -> process_presence(UserId, Payload, Member, State)
     end.
 
--spec maybe_notify_very_large_guild_member_list(term(), guild_state()) -> ok.
-maybe_notify_very_large_guild_member_list(NotifyMsg, State) ->
-    case maps:get(very_large_guild_coordinator_pid, State, undefined) of
-        CoordPid when is_pid(CoordPid) ->
-            gen_server:cast(CoordPid, {very_large_guild_member_list_notify, NotifyMsg}),
-            ok;
+-spec process_presence(user_id(), map(), member(), guild_state()) -> {noreply, guild_state()}.
+process_presence(UserId, Payload, Member, State) ->
+    PresenceMap = build_presence_map(Payload, Member),
+    NormalizedStatus = normalize_presence_status(
+        maps:get(<<"status">>, Payload, <<"offline">>)
+    ),
+    Status = ensure_atom(constants:status_type_atom(NormalizedStatus)),
+    OldPresence = guild_state_member:lookup_presence(
+        maps:get(member_presence, State),
+        UserId
+    ),
+    process_presence_change(UserId, OldPresence, PresenceMap, Status, State).
+
+-spec process_presence_change(user_id(), map() | undefined, map(), atom(), guild_state()) ->
+    {noreply, guild_state()}.
+process_presence_change(UserId, PresenceMap, PresenceMap, Status, State) ->
+    {noreply, maybe_handle_unchanged_presence(Status, UserId, State)};
+process_presence_change(UserId, OldPresence, PresenceMap, Status, State) ->
+    StateWithPresence = store_member_presence(UserId, PresenceMap, State),
+    ok = guild_presence_sync:sync_online_status(UserId, StateWithPresence),
+    StateAfterBroadcast = spawn_presence_broadcast(
+        UserId, OldPresence, PresenceMap, State, StateWithPresence
+    ),
+    StateAfterOffline = maybe_handle_offline(Status, UserId, StateAfterBroadcast),
+    {noreply, StateAfterOffline}.
+
+-spec maybe_handle_unchanged_presence(atom(), user_id(), guild_state()) -> guild_state().
+maybe_handle_unchanged_presence(offline, UserId, State) ->
+    maybe_handle_offline(offline, UserId, State);
+maybe_handle_unchanged_presence(_Status, _UserId, State) ->
+    State.
+
+-spec build_presence_map(map(), member()) -> map().
+build_presence_map(Payload, Member) ->
+    StatusBin = maps:get(<<"status">>, Payload, <<"offline">>),
+    NormalizedStatusBin = normalize_presence_status(StatusBin),
+    Mobile = maps:get(<<"mobile">>, Payload, false),
+    Afk = maps:get(<<"afk">>, Payload, false),
+    MemberUser = maps:get(<<"user">>, Member, #{}),
+    CustomStatus = maps:get(<<"custom_status">>, Payload, null),
+    presence_payload:build(MemberUser, NormalizedStatusBin, Mobile, Afk, CustomStatus).
+
+-spec maybe_handle_offline(atom(), user_id(), guild_state()) -> guild_state().
+maybe_handle_offline(offline, UserId, State) ->
+    guild_sessions:handle_user_offline(UserId, State);
+maybe_handle_offline(_, _UserId, State) ->
+    State.
+
+-spec sync_online_status(user_id(), guild_state()) -> ok.
+sync_online_status(UserId, State) ->
+    guild_presence_sync:sync_online_status(UserId, State).
+
+-spec spawn_presence_broadcast(
+    user_id(),
+    map(),
+    map(),
+    guild_state(),
+    guild_state()
+) -> guild_state().
+spawn_presence_broadcast(UserId, OldPresence, PresenceMap, OldState, NewState) ->
+    {ok, NewState1} = guild_member_list:broadcast_member_list_updates(
+        UserId,
+        OldState,
+        NewState,
+        OldPresence,
+        PresenceMap
+    ),
+    {Pid, NewState2} = guild_broadcaster:ensure(NewState1),
+    NewSnap = build_broadcast_snapshot(NewState2),
+    guild_broadcaster:cast_presence(Pid, UserId, PresenceMap, #{}, NewSnap),
+    NewState2.
+
+-spec build_broadcast_snapshot(guild_state()) -> map().
+build_broadcast_snapshot(State) ->
+    maybe_trim_snapshot(build_base_snapshot(State), State).
+
+-spec build_base_snapshot(guild_state()) -> map().
+build_base_snapshot(State) ->
+    Keys = [
+        id,
+        data,
+        sessions,
+        member_subscriptions,
+        member_presence,
+        role_overrides,
+        permission_overwrites
+    ],
+    lists:foldl(
+        fun(K, Acc) ->
+            put_existing_key(K, State, Acc)
+        end,
+        #{},
+        Keys
+    ).
+
+-spec maybe_trim_snapshot(map(), guild_state()) -> map().
+maybe_trim_snapshot(Snapshot, State) ->
+    case should_trim_snapshot(State) of
+        true -> trim_snapshot(Snapshot);
+        false -> Snapshot
+    end.
+
+-spec should_trim_snapshot(guild_state()) -> boolean().
+should_trim_snapshot(State) ->
+    presence_snapshot_trim_enabled() andalso member_count_at_or_above_threshold(State).
+
+-spec member_count_at_or_above_threshold(guild_state()) -> boolean().
+member_count_at_or_above_threshold(State) ->
+    case maps:get(member_count, State, undefined) of
+        Count when is_integer(Count) ->
+            Count >= presence_snapshot_trim_member_threshold();
         _ ->
-            ok
+            false
+    end.
+
+-spec presence_snapshot_trim_enabled() -> boolean().
+presence_snapshot_trim_enabled() ->
+    case application:get_env(fluxer_gateway, presence_snapshot_trim_enabled, true) of
+        false -> false;
+        _ -> true
+    end.
+
+-spec presence_snapshot_trim_member_threshold() -> pos_integer().
+presence_snapshot_trim_member_threshold() ->
+    case
+        application:get_env(
+            fluxer_gateway,
+            presence_snapshot_trim_member_threshold,
+            ?PRESENCE_SNAPSHOT_TRIM_MEMBER_THRESHOLD_DEFAULT
+        )
+    of
+        N when is_integer(N), N > 0 -> N;
+        _ -> ?PRESENCE_SNAPSHOT_TRIM_MEMBER_THRESHOLD_DEFAULT
+    end.
+
+-spec trim_snapshot(map()) -> map().
+trim_snapshot(Snapshot) ->
+    trim_snapshot_sessions(trim_snapshot_data(Snapshot)).
+
+-spec trim_snapshot_data(map()) -> map().
+trim_snapshot_data(#{data := Data} = Snapshot) when is_map(Data) ->
+    Snapshot#{data => maps:without(?HEAVY_MEMBER_DATA_KEYS, Data)};
+trim_snapshot_data(Snapshot) ->
+    Snapshot.
+
+-spec trim_snapshot_sessions(map()) -> map().
+trim_snapshot_sessions(#{sessions := Sessions} = Snapshot) when is_map(Sessions) ->
+    Projected = maps:map(
+        fun(_SessionId, SessionData) -> project_session(SessionData) end,
+        Sessions
+    ),
+    Snapshot#{sessions => Projected};
+trim_snapshot_sessions(Snapshot) ->
+    Snapshot.
+
+-spec project_session(term()) -> term().
+project_session(SessionData) when is_map(SessionData) ->
+    maps:with([user_id, pid, viewable_channels], SessionData);
+project_session(SessionData) ->
+    SessionData.
+
+-spec put_existing_key(atom(), guild_state(), map()) -> map().
+put_existing_key(Key, State, Acc) ->
+    case maps:find(Key, State) of
+        {ok, Value} -> Acc#{Key => Value};
+        error -> Acc
     end.
 
 -spec broadcast_presence_update(user_id(), map(), guild_state()) -> ok.
 broadcast_presence_update(UserId, Payload, State) ->
     case find_member_by_user_id(UserId, State) of
-        undefined ->
-            ok;
-        _Member ->
-            GuildId = map_utils:get_integer(State, id, 0),
-            PresenceUpdate = maps:put(<<"guild_id">>, integer_to_binary(GuildId), Payload),
+        undefined -> ok;
+        _Member -> broadcast_presence_update_impl(UserId, Payload, State)
+    end.
+
+-spec broadcast_presence_update_impl(user_id(), map(), guild_state()) -> ok.
+broadcast_presence_update_impl(UserId, Payload, State) ->
+    case guild_id(State) of
+        GuildId when is_integer(GuildId), GuildId > 0 ->
+            PresenceUpdate = Payload#{<<"guild_id">> => integer_to_binary(GuildId)},
             Sessions = maps:get(sessions, State, #{}),
-            MemberSubs = maps:get(member_subscriptions, State, guild_subscriptions:init_state()),
-            SubscribedSessionIds = guild_subscriptions:get_subscribed_sessions(UserId, MemberSubs),
-            TargetChannelMap = get_user_viewable_channel_map(UserId, Sessions, State),
+            MemberSubs = maps:get(
+                member_subscriptions, State, guild_subscriptions:init_state()
+            ),
+            SubscribedSessionIds = guild_subscriptions:get_subscribed_sessions(
+                UserId, MemberSubs
+            ),
+            TargetChannelMap = guild_presence_sync:get_user_viewable_channel_map(
+                UserId, Sessions, State
+            ),
             {ValidSessionIds, InvalidSessionIds} =
-                partition_subscribed_sessions(
+                guild_presence_sync:partition_subscribed_sessions(
                     SubscribedSessionIds, Sessions, TargetChannelMap, UserId, State
                 ),
-            StateAfterInvalidRemovals =
-                lists:foldl(
-                    fun(SessionId, AccState) ->
-                        remove_session_member_subscription(SessionId, UserId, AccState)
-                    end,
-                    State,
-                    sets:to_list(sets:from_list(InvalidSessionIds))
-                ),
-            FinalSessions = maps:get(sessions, StateAfterInvalidRemovals, #{}),
-            ValidSessionSet = sets:from_list(ValidSessionIds),
-            SessionsToNotify = lists:filter(
-                fun({SessionId, _}) -> sets:is_element(SessionId, ValidSessionSet) end,
-                maps:to_list(FinalSessions)
+            FinalState = guild_presence_sync:remove_invalid_subscriptions(
+                InvalidSessionIds, UserId, State
             ),
-            lists:foreach(
-                fun({_SessionId, SessionData}) ->
-                    SessionPid = maps:get(pid, SessionData),
-                    case is_pid(SessionPid) of
-                        true ->
-                            gen_server:cast(
-                                SessionPid, {dispatch, presence_update, PresenceUpdate}
-                            );
-                        false ->
-                            ok
-                    end
-                end,
-                SessionsToNotify
-            ),
+            FinalSessions = maps:get(sessions, FinalState, #{}),
+            guild_presence_sync:dispatch_to_valid_sessions(
+                ValidSessionIds, FinalSessions, PresenceUpdate, GuildId
+            );
+        _ ->
             ok
     end.
+
+-spec send_cached_presence_to_session(user_id(), binary(), guild_state()) -> guild_state().
+send_cached_presence_to_session(UserId, SessionId, State) ->
+    case safe_presence_cache_get(UserId) of
+        {ok, Payload} -> send_presence_payload_to_session(UserId, SessionId, Payload, State);
+        _ -> State
+    end.
+
+-spec send_presence_payload_to_session(user_id(), binary(), map(), guild_state()) ->
+    guild_state().
+send_presence_payload_to_session(UserId, SessionId, Payload, State) ->
+    case guild_id(State) of
+        GuildId when is_integer(GuildId), GuildId > 0 ->
+            Sessions = maps:get(sessions, State, #{}),
+            send_cached_presence_to_known_session(
+                UserId, SessionId, Payload, GuildId, Sessions, State
+            );
+        _ ->
+            State
+    end.
+
+-spec send_cached_presence_to_known_session(
+    user_id(), binary(), map(), integer(), map(), guild_state()
+) -> guild_state().
+send_cached_presence_to_known_session(UserId, SessionId, Payload, GuildId, Sessions, State) ->
+    case maps:get(SessionId, Sessions, undefined) of
+        #{pid := SessionPid} when is_pid(SessionPid) ->
+            dispatch_cached_presence(UserId, SessionPid, Payload, GuildId, State);
+        _ ->
+            State
+    end.
+
+-spec dispatch_cached_presence(user_id(), pid(), map(), integer(), guild_state()) ->
+    guild_state().
+dispatch_cached_presence(UserId, SessionPid, Payload, GuildId, State) ->
+    case find_member_by_user_id(UserId, State) of
+        undefined ->
+            State;
+        Member ->
+            PresenceBase = build_presence_map(Payload, Member),
+            PresenceUpdate = PresenceBase#{<<"guild_id">> => integer_to_binary(GuildId)},
+            gateway_dispatch_relay:dispatch(
+                SessionPid, presence_update, PresenceUpdate, GuildId
+            ),
+            State
+    end.
+
+-spec ensure_atom(atom() | binary()) -> atom().
+ensure_atom(A) when is_atom(A) -> A;
+ensure_atom(_) -> undefined.
 
 -spec normalize_presence_status(binary() | term()) -> binary().
 normalize_presence_status(<<"invisible">>) -> <<"offline">>;
 normalize_presence_status(Status) when is_binary(Status) -> Status;
 normalize_presence_status(_) -> <<"offline">>.
 
--spec send_cached_presence_to_session(user_id(), binary(), guild_state()) -> guild_state().
-send_cached_presence_to_session(UserId, SessionId, State) ->
-    case presence_cache:get(UserId) of
-        {ok, Payload} ->
-            send_presence_payload_to_session(UserId, SessionId, Payload, State);
-        _ ->
-            State
+-spec safe_presence_cache_get(user_id()) -> {ok, map()} | not_found.
+safe_presence_cache_get(UserId) ->
+    try presence_cache:get(UserId) of
+        {ok, Payload} when is_map(Payload) -> {ok, Payload};
+        _ -> not_found
+    catch
+        _:_ -> not_found
     end.
 
--spec send_presence_payload_to_session(user_id(), binary(), map(), guild_state()) -> guild_state().
-send_presence_payload_to_session(UserId, SessionId, Payload, State) ->
-    GuildId = map_utils:get_integer(State, id, 0),
-    Sessions = maps:get(sessions, State, #{}),
-    case maps:get(SessionId, Sessions, undefined) of
-        #{pid := SessionPid} when is_pid(SessionPid) ->
-            Member = find_member_by_user_id(UserId, State),
-            case Member of
-                undefined ->
-                    State;
-                _ ->
-                    StatusBin = maps:get(<<"status">>, Payload, <<"offline">>),
-                    Mobile = maps:get(<<"mobile">>, Payload, false),
-                    Afk = maps:get(<<"afk">>, Payload, false),
-                    MemberUser = maps:get(<<"user">>, Member, #{}),
-                    CustomStatus = maps:get(<<"custom_status">>, Payload, null),
-                    PresenceBase =
-                        presence_payload:build(MemberUser, StatusBin, Mobile, Afk, CustomStatus),
-                    PresenceUpdate = maps:put(
-                        <<"guild_id">>, integer_to_binary(GuildId), PresenceBase
-                    ),
-                    gen_server:cast(SessionPid, {dispatch, presence_update, PresenceUpdate}),
-                    State
-            end;
-        _ ->
-            State
-    end.
+-spec guild_id(guild_state()) -> integer() | undefined.
+guild_id(State) ->
+    snowflake_id:parse_optional(maps:get(id, State, undefined)).
 
 -spec handle_user_data_update(user_id(), map(), guild_state()) -> guild_state().
 handle_user_data_update(UserId, UserData, State) ->
-    Data = guild_data(State),
-    Members = guild_data_index:member_map(Data),
     case find_member_by_user_id(UserId, State) of
-        undefined ->
-            State;
-        Member ->
-            CurrentUserData = maps:get(<<"user">>, Member, #{}),
-            case check_user_data_differs(CurrentUserData, UserData) of
-                false ->
-                    State;
-                true ->
-                    UpdatedMembers = maps:map(
-                        fun(_MemberUserId, Member0) ->
-                            maybe_replace_member(Member0, UserId, UserData)
-                        end,
-                        Members
-                    ),
-                    UpdatedData = guild_data_index:put_member_map(UpdatedMembers, Data),
-                    UpdatedState = maps:put(data, UpdatedData, State),
-                    maybe_dispatch_member_update(UserId, UpdatedState),
-                    UpdatedState
-            end
+        undefined -> State;
+        Member -> apply_user_data_update(UserId, UserData, Member, State)
     end.
 
--spec maybe_replace_member(member(), user_id(), map()) -> member().
-maybe_replace_member(Member, UserId, UserData) ->
-    case member_id(Member) of
-        UserId ->
-            maps:put(<<"user">>, UserData, Member);
-        _ ->
-            Member
+-spec apply_user_data_update(user_id(), map(), member(), guild_state()) -> guild_state().
+apply_user_data_update(UserId, UserData, Member, State) ->
+    CurrentUserData = maps:get(<<"user">>, Member, #{}),
+    NormalizedUserData = user_utils:normalize_user(UserData),
+    case utils:check_user_data_differs(CurrentUserData, NormalizedUserData) of
+        false ->
+            State;
+        true ->
+            UpdatedMember = Member#{<<"user">> => NormalizedUserData},
+            Data = map_utils:ensure_map(map_utils:get_safe(State, data, #{})),
+            UpdatedData = guild_data_index:put_member(UpdatedMember, Data),
+            UpdatedState = State#{data => UpdatedData},
+            guild_presence_sync:sync_member_data(UserId, UpdatedState),
+            maybe_dispatch_member_update(UserId, UpdatedState),
+            UpdatedState
     end.
 
 -spec maybe_dispatch_member_update(user_id(), guild_state()) -> ok.
 maybe_dispatch_member_update(UserId, State) ->
     case find_member_by_user_id(UserId, State) of
-        undefined ->
-            ok;
-        Member ->
-            GuildId = map_utils:get_integer(State, id, 0),
-            MemberUpdate = maps:put(<<"guild_id">>, integer_to_binary(GuildId), Member),
+        undefined -> ok;
+        Member -> dispatch_member_update(Member, State)
+    end.
+
+-spec dispatch_member_update(map(), guild_state()) -> ok.
+dispatch_member_update(Member, State) ->
+    case guild_id(State) of
+        GuildId when is_integer(GuildId), GuildId > 0 ->
+            MemberUpdate = Member#{<<"guild_id">> => integer_to_binary(GuildId)},
             gen_server:cast(
                 self(), {dispatch, #{event => guild_member_update, data => MemberUpdate}}
-            )
-    end.
-
--spec guild_data(guild_state()) -> map().
-guild_data(State) ->
-    map_utils:ensure_map(map_utils:get_safe(State, data, #{})).
-
--spec member_id(map()) -> user_id() | undefined.
-member_id(Member) ->
-    User = map_utils:ensure_map(maps:get(<<"user">>, Member, #{})),
-    map_utils:get_integer(User, <<"id">>, undefined).
-
--spec partition_subscribed_sessions([binary()], map(), map(), user_id(), guild_state()) ->
-    {[binary()], [binary()]}.
-partition_subscribed_sessions(SessionIds, Sessions, TargetChannelMap, TargetUserId, State) ->
-    lists:foldl(
-        fun(SessionId, {Valids, Invalids}) ->
-            case maps:get(SessionId, Sessions, undefined) of
-                undefined ->
-                    {Valids, [SessionId | Invalids]};
-                SessionData ->
-                    SessionUserId = maps:get(user_id, SessionData, undefined),
-                    Shared =
-                        case SessionUserId of
-                            undefined ->
-                                false;
-                            UserId when UserId =:= TargetUserId ->
-                                false;
-                            _ ->
-                                session_shares_channels(
-                                    SessionData, SessionUserId, TargetChannelMap, State
-                                )
-                        end,
-                    case Shared of
-                        true -> {[SessionId | Valids], Invalids};
-                        false -> {Valids, [SessionId | Invalids]}
-                    end
-            end
-        end,
-        {[], []},
-        SessionIds
-    ).
-
--spec session_shares_channels(map(), user_id(), map(), guild_state()) -> boolean().
-session_shares_channels(SessionData, SessionUserId, TargetChannelMap, State) ->
-    case maps:get(viewable_channels, SessionData, undefined) of
-        ViewableMap when is_map(ViewableMap) ->
-            maps_share_any_key(ViewableMap, TargetChannelMap);
+            );
         _ ->
-            SessionChannels = guild_visibility:viewable_channel_set(SessionUserId, State),
-            TargetChannels = sets:from_list(maps:keys(TargetChannelMap)),
-            not sets:is_empty(sets:intersection(SessionChannels, TargetChannels))
+            ok
     end.
-
--spec maps_share_any_key(map(), map()) -> boolean().
-maps_share_any_key(MapA, MapB) ->
-    {Smaller, Larger} =
-        case map_size(MapA) =< map_size(MapB) of
-            true -> {MapA, MapB};
-            false -> {MapB, MapA}
-        end,
-    maps_share_any_key_iter(maps:iterator(Smaller), Larger).
-
--spec maps_share_any_key_iter(maps:iterator(), map()) -> boolean().
-maps_share_any_key_iter(Iterator, LargerMap) ->
-    case maps:next(Iterator) of
-        none ->
-            false;
-        {Key, _, NextIterator} ->
-            case maps:is_key(Key, LargerMap) of
-                true -> true;
-                false -> maps_share_any_key_iter(NextIterator, LargerMap)
-            end
-    end.
-
--spec get_user_viewable_channel_map(user_id(), map(), guild_state()) -> map().
-get_user_viewable_channel_map(UserId, Sessions, State) ->
-    case find_session_viewable_channels_for_user(UserId, Sessions) of
-        undefined ->
-            ChannelList = guild_visibility:get_user_viewable_channels(UserId, State),
-            maps:from_list([{Ch, true} || Ch <- ChannelList]);
-        ViewableMap ->
-            ViewableMap
-    end.
-
--spec find_session_viewable_channels_for_user(user_id(), map()) -> map() | undefined.
-find_session_viewable_channels_for_user(UserId, Sessions) ->
-    find_session_viewable_channels_iter(UserId, maps:iterator(Sessions)).
-
--spec find_session_viewable_channels_iter(user_id(), maps:iterator()) -> map() | undefined.
-find_session_viewable_channels_iter(UserId, Iterator) ->
-    case maps:next(Iterator) of
-        none ->
-            undefined;
-        {_, SessionData, NextIterator} ->
-            case maps:get(user_id, SessionData, undefined) of
-                UserId ->
-                    case maps:get(viewable_channels, SessionData, undefined) of
-                        ViewableChannels when is_map(ViewableChannels) ->
-                            ViewableChannels;
-                        _ ->
-                            find_session_viewable_channels_iter(UserId, NextIterator)
-                    end;
-                _ ->
-                    find_session_viewable_channels_iter(UserId, NextIterator)
-            end
-    end.
-
--spec remove_session_member_subscription(binary(), user_id(), guild_state()) -> guild_state().
-remove_session_member_subscription(SessionId, UserId, State) ->
-    MemberSubs = maps:get(member_subscriptions, State, guild_subscriptions:init_state()),
-    NewMemberSubs = guild_subscriptions:unsubscribe(SessionId, UserId, MemberSubs),
-    State1 = maps:put(member_subscriptions, NewMemberSubs, State),
-    guild_sessions:unsubscribe_from_user_presence(UserId, State1).
-
--spec check_user_data_differs(map(), map()) -> boolean().
-check_user_data_differs(CurrentUserData, NewUserData) ->
-    utils:check_user_data_differs(CurrentUserData, NewUserData).
 
 -spec find_member_by_user_id(user_id(), guild_state()) -> member() | undefined.
 find_member_by_user_id(UserId, State) ->
@@ -358,9 +366,9 @@ find_member_by_user_id(UserId, State) ->
 
 -spec store_member_presence(user_id(), map(), guild_state()) -> guild_state().
 store_member_presence(UserId, PresenceMap, State) ->
-    MemberPresence = maps:get(member_presence, State, #{}),
-    UpdatedPresence = maps:put(UserId, PresenceMap, MemberPresence),
-    maps:put(member_presence, UpdatedPresence, State).
+    Tab = maps:get(member_presence, State),
+    ets:insert(Tab, {UserId, PresenceMap}),
+    State.
 
 -ifdef(TEST).
 
@@ -381,6 +389,20 @@ handle_bus_presence_broadcasts_test() ->
     {noreply, _NewState} = handle_bus_presence(1, Payload, State),
     ok.
 
+handle_bus_presence_unchanged_payload_is_noop_test() ->
+    State = presence_test_state(),
+    Payload = #{
+        <<"status">> => <<"online">>,
+        <<"mobile">> => true,
+        <<"afk">> => false,
+        <<"user">> => #{<<"id">> => <<"1">>, <<"username">> => <<"Alpha">>}
+    },
+    Member = guild_permissions:find_member_by_user_id(1, State),
+    PresenceMap = build_presence_map(Payload, Member),
+    ets:insert(maps:get(member_presence, State), {1, PresenceMap}),
+    {noreply, NewState} = handle_bus_presence(1, Payload, State),
+    ?assertEqual(State, NewState).
+
 handle_bus_presence_user_update_test() ->
     State = presence_test_state(),
     UserData = #{<<"id">> => <<"1">>, <<"username">> => <<"Updated">>},
@@ -396,96 +418,6 @@ normalize_presence_status_test() ->
     ?assertEqual(<<"idle">>, normalize_presence_status(<<"idle">>)),
     ?assertEqual(<<"offline">>, normalize_presence_status(undefined)).
 
-handle_bus_presence_invisible_normalized_test() ->
-    State = presence_test_state(),
-    Payload = #{
-        <<"status">> => <<"invisible">>,
-        <<"mobile">> => false,
-        <<"afk">> => false,
-        <<"user">> => #{<<"id">> => <<"1">>, <<"username">> => <<"Alpha">>}
-    },
-    {noreply, NewState} = handle_bus_presence(1, Payload, State),
-    MemberPresence = maps:get(member_presence, NewState, #{}),
-    UserPresence = maps:get(1, MemberPresence),
-    ?assertEqual(<<"offline">>, maps:get(<<"status">>, UserPresence)).
-
-maps_share_any_key_empty_test() ->
-    ?assertEqual(false, maps_share_any_key(#{}, #{})),
-    ?assertEqual(false, maps_share_any_key(#{1 => true}, #{})),
-    ?assertEqual(false, maps_share_any_key(#{}, #{1 => true})).
-
-maps_share_any_key_overlap_test() ->
-    ?assertEqual(true, maps_share_any_key(#{1 => true, 2 => true}, #{2 => true, 3 => true})),
-    ?assertEqual(true, maps_share_any_key(#{5 => true}, #{5 => true})).
-
-maps_share_any_key_no_overlap_test() ->
-    ?assertEqual(false, maps_share_any_key(#{1 => true, 2 => true}, #{3 => true, 4 => true})).
-
-get_user_viewable_channel_map_uses_session_cache_test() ->
-    Sessions = #{
-        <<"s1">> => #{user_id => 10, viewable_channels => #{100 => true, 200 => true}},
-        <<"s2">> => #{user_id => 20, viewable_channels => #{300 => true}}
-    },
-    State = #{sessions => Sessions, data => #{<<"members">> => #{}}},
-    Result = get_user_viewable_channel_map(10, Sessions, State),
-    ?assertEqual(#{100 => true, 200 => true}, Result).
-
-get_user_viewable_channel_map_skips_session_without_cache_test() ->
-    Sessions = #{
-        <<"s1">> => #{user_id => 10},
-        <<"s2">> => #{user_id => 10, viewable_channels => #{100 => true}}
-    },
-    State = #{sessions => Sessions, data => #{<<"members">> => #{}}},
-    Result = get_user_viewable_channel_map(10, Sessions, State),
-    ?assertEqual(#{100 => true}, Result).
-
-session_shares_channels_uses_cached_viewable_test() ->
-    SessionData = #{user_id => 20, viewable_channels => #{100 => true, 200 => true}},
-    TargetChannelMap = #{200 => true, 300 => true},
-    State = #{sessions => #{}, data => #{<<"members">> => #{}}},
-    ?assertEqual(true, session_shares_channels(SessionData, 20, TargetChannelMap, State)).
-
-session_shares_channels_no_overlap_test() ->
-    SessionData = #{user_id => 20, viewable_channels => #{100 => true}},
-    TargetChannelMap = #{200 => true, 300 => true},
-    State = #{sessions => #{}, data => #{<<"members">> => #{}}},
-    ?assertEqual(false, session_shares_channels(SessionData, 20, TargetChannelMap, State)).
-
-partition_subscribed_sessions_uses_cached_channels_test() ->
-    Sessions = #{
-        <<"s1">> => #{user_id => 20, pid => self(), viewable_channels => #{100 => true}},
-        <<"s2">> => #{user_id => 30, pid => self(), viewable_channels => #{200 => true}}
-    },
-    TargetChannelMap = #{100 => true, 300 => true},
-    State = #{sessions => Sessions, data => #{<<"members">> => #{}}},
-    {Valid, Invalid} = partition_subscribed_sessions(
-        [<<"s1">>, <<"s2">>], Sessions, TargetChannelMap, 10, State
-    ),
-    ?assertEqual([<<"s1">>], Valid),
-    ?assertEqual([<<"s2">>], Invalid).
-
-partition_subscribed_sessions_excludes_target_user_test() ->
-    Sessions = #{
-        <<"s1">> => #{user_id => 10, pid => self(), viewable_channels => #{100 => true}}
-    },
-    TargetChannelMap = #{100 => true},
-    State = #{sessions => Sessions, data => #{<<"members">> => #{}}},
-    {Valid, Invalid} = partition_subscribed_sessions(
-        [<<"s1">>], Sessions, TargetChannelMap, 10, State
-    ),
-    ?assertEqual([], Valid),
-    ?assertEqual([<<"s1">>], Invalid).
-
-partition_subscribed_sessions_missing_session_test() ->
-    Sessions = #{},
-    TargetChannelMap = #{100 => true},
-    State = #{sessions => Sessions, data => #{<<"members">> => #{}}},
-    {Valid, Invalid} = partition_subscribed_sessions(
-        [<<"s1">>], Sessions, TargetChannelMap, 10, State
-    ),
-    ?assertEqual([], Valid),
-    ?assertEqual([<<"s1">>], Invalid).
-
 presence_test_state() ->
     #{
         id => 42,
@@ -494,7 +426,77 @@ presence_test_state() ->
                 1 => #{<<"user">> => #{<<"id">> => <<"1">>, <<"username">> => <<"Alpha">>}}
             }
         },
-        sessions => #{}
+        sessions => #{},
+        member_presence => ets:new(test_member_presence, [set, public]),
+        member_list_subscriptions => guild_member_list_subs:new()
     }.
+
+snapshot_trim_test_state(Tab) ->
+    #{
+        id => 42,
+        member_count => 10,
+        data => #{
+            members_ets => Tab,
+            <<"members">> => #{1 => #{<<"user">> => #{<<"id">> => <<"1">>}}},
+            members_normalized => #{1 => #{<<"user">> => #{<<"id">> => <<"1">>}}},
+            <<"member_role_index">> => #{1 => []},
+            <<"channels">> => [],
+            <<"roles">> => []
+        },
+        sessions => #{
+            <<"s1">> => #{
+                user_id => 1,
+                pid => self(),
+                viewable_channels => #{100 => true},
+                active_guilds => [42],
+                pending_connect => false
+            }
+        }
+    }.
+
+build_broadcast_snapshot_trims_by_default_test() ->
+    application:set_env(fluxer_gateway, presence_snapshot_trim_member_threshold, 2),
+    Tab = ets:new(snapshot_trim_members, [set, public]),
+    try
+        Snap = build_broadcast_snapshot(snapshot_trim_test_state(Tab)),
+        SnapData = maps:get(data, Snap),
+        ?assertNot(maps:is_key(<<"members">>, SnapData)),
+        ?assertNot(maps:is_key(members_normalized, SnapData)),
+        ?assertNot(maps:is_key(<<"member_role_index">>, SnapData)),
+        ?assertEqual(Tab, maps:get(members_ets, SnapData)),
+        ?assert(maps:is_key(<<"channels">>, SnapData)),
+        SnapSession = maps:get(<<"s1">>, maps:get(sessions, Snap)),
+        ?assertEqual([pid, user_id, viewable_channels], lists:sort(maps:keys(SnapSession))),
+        ?assertNot(maps:is_key(voice_states, Snap)),
+        ?assertNot(maps:is_key(member_count, Snap))
+    after
+        application:unset_env(fluxer_gateway, presence_snapshot_trim_member_threshold),
+        ets:delete(Tab)
+    end.
+
+build_broadcast_snapshot_no_trim_when_disabled_test() ->
+    application:set_env(fluxer_gateway, presence_snapshot_trim_enabled, false),
+    Tab = ets:new(snapshot_notrim_members, [set, public]),
+    try
+        State = (snapshot_trim_test_state(Tab))#{member_count => 100000},
+        Snap = build_broadcast_snapshot(State),
+        ?assert(maps:is_key(<<"members">>, maps:get(data, Snap))),
+        SnapSession = maps:get(<<"s1">>, maps:get(sessions, Snap)),
+        ?assert(maps:is_key(active_guilds, SnapSession))
+    after
+        application:unset_env(fluxer_gateway, presence_snapshot_trim_enabled),
+        ets:delete(Tab)
+    end.
+
+build_broadcast_snapshot_no_trim_below_threshold_test() ->
+    application:set_env(fluxer_gateway, presence_snapshot_trim_member_threshold, 50000),
+    Tab = ets:new(snapshot_below_members, [set, public]),
+    try
+        Snap = build_broadcast_snapshot(snapshot_trim_test_state(Tab)),
+        ?assert(maps:is_key(<<"members">>, maps:get(data, Snap)))
+    after
+        application:unset_env(fluxer_gateway, presence_snapshot_trim_member_threshold),
+        ets:delete(Tab)
+    end.
 
 -endif.

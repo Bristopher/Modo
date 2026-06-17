@@ -1,24 +1,9 @@
-/*
- * Copyright (C) 2026 Fluxer Contributors
- *
- * This file is part of Fluxer.
- *
- * Fluxer is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Fluxer is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
- */
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type {FunctionComponent, SVGProps} from 'react';
 import type {Messages} from '@lingui/core';
+
+declare module '*.css' {}
 
 declare module '*.po' {
 	export const messages: Messages;
@@ -65,6 +50,11 @@ declare module '*.gif' {
 }
 
 declare module '*.webp' {
+	const url: string;
+	export default url;
+}
+
+declare module '@pkgs/libfluxcore/libfluxcore_bg.wasm' {
 	const url: string;
 	export default url;
 }

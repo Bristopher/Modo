@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(user_utils).
+-typing([eqwalizer]).
 
 -export([normalize_user/1, partial_user_fields/0]).
 
@@ -30,25 +16,49 @@ partial_user_fields() ->
         <<"avatar_color">>,
         <<"bot">>,
         <<"system">>,
-        <<"flags">>
+        <<"flags">>,
+        <<"mention_flags">>
     ].
 
 -spec normalize_user(map() | term()) -> map().
 normalize_user(User) when is_map(User) ->
     CleanPairs =
         lists:foldl(
-            fun(Key, Acc) ->
-                case maps:get(Key, User, undefined) of
-                    undefined -> Acc;
-                    Value -> [{Key, Value} | Acc]
-                end
-            end,
+            fun(Key, Acc) -> add_normalized_field(Key, User, Acc) end,
             [],
             partial_user_fields()
         ),
     maps:from_list(lists:reverse(CleanPairs));
 normalize_user(_) ->
     #{}.
+
+-spec normalize_field(binary(), term()) -> term() | undefined.
+normalize_field(<<"id">>, Value) ->
+    snowflake_id:parse(Value);
+normalize_field(<<"avatar_color">>, null) ->
+    null;
+normalize_field(<<"avatar_color">>, Value) ->
+    guild_data_normalize_schema:int(Value);
+normalize_field(<<"flags">>, Value) ->
+    user_flags:parse(Value);
+normalize_field(<<"mention_flags">>, Value) ->
+    user_flags:parse(Value);
+normalize_field(_Key, Value) ->
+    Value.
+
+-spec add_normalized_field(binary(), map(), [{binary(), term()}]) -> [{binary(), term()}].
+add_normalized_field(Key, User, Acc) ->
+    case maps:get(Key, User, undefined) of
+        undefined -> Acc;
+        Value -> maybe_add_normalized_field(Key, normalize_field(Key, Value), Acc)
+    end.
+
+-spec maybe_add_normalized_field(binary(), term(), [{binary(), term()}]) ->
+    [{binary(), term()}].
+maybe_add_normalized_field(_Key, undefined, Acc) ->
+    Acc;
+maybe_add_normalized_field(Key, Normalized, Acc) ->
+    [{Key, Normalized} | Acc].
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -61,7 +71,7 @@ normalize_user_valid_test() ->
         <<"email">> => <<"test@example.com">>
     },
     Result = normalize_user(User),
-    ?assertEqual(<<"123">>, maps:get(<<"id">>, Result)),
+    ?assertEqual(123, maps:get(<<"id">>, Result)),
     ?assertEqual(<<"testuser">>, maps:get(<<"username">>, Result)),
     ?assertEqual(<<"0001">>, maps:get(<<"discriminator">>, Result)),
     ?assertEqual(error, maps:find(<<"email">>, Result)).
@@ -73,13 +83,24 @@ normalize_user_all_fields_test() ->
         <<"discriminator">> => <<"0">>,
         <<"global_name">> => <<"Test User">>,
         <<"avatar">> => <<"abc123">>,
-        <<"avatar_color">> => <<"#ff0000">>,
+        <<"avatar_color">> => 16#ff0000,
         <<"bot">> => false,
         <<"system">> => false,
         <<"flags">> => 0
     },
     Result = normalize_user(User),
-    ?assertEqual(9, maps:size(Result)).
+    ?assertEqual(9, maps:size(Result)),
+    ?assertEqual(16#ff0000, maps:get(<<"avatar_color">>, Result)).
+
+normalize_user_passes_mention_flags_test() ->
+    User = #{
+        <<"id">> => <<"123">>,
+        <<"username">> => <<"test">>,
+        <<"discriminator">> => <<"0">>,
+        <<"mention_flags">> => 1
+    },
+    Result = normalize_user(User),
+    ?assertEqual(1, maps:get(<<"mention_flags">>, Result)).
 
 normalize_user_undefined_values_test() ->
     User = #{
@@ -103,7 +124,7 @@ normalize_user_empty_map_test() ->
 partial_user_fields_test() ->
     Fields = partial_user_fields(),
     ?assert(is_list(Fields)),
-    ?assertEqual(9, length(Fields)),
+    ?assertEqual(10, length(Fields)),
     ?assert(lists:member(<<"id">>, Fields)),
     ?assert(lists:member(<<"username">>, Fields)),
     ?assert(lists:member(<<"flags">>, Fields)).

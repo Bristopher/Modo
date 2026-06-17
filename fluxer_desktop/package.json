@@ -1,33 +1,66 @@
 {
 	"name": "fluxer_desktop",
 	"version": "0.0.0",
+	"description": "Instant messaging and VoIP application",
+	"homepage": "https://fluxer.app",
+	"author": "Fluxer Platform AB <support@fluxer.app>",
+	"license": "AGPL-3.0-or-later",
 	"private": true,
 	"type": "module",
 	"main": "dist/main/index.js",
 	"scripts": {
 		"build": "node scripts/build.mjs",
-		"set-channel": "node scripts/set-build-channel.mjs",
-		"typecheck": "tsgo --noEmit"
+		"set-channel": "cargo run --manifest-path ../tools/ci/Cargo.toml -- build-desktop --step set_build_channel",
+		"test": "cargo test --manifest-path native/rust/Cargo.toml",
+		"typecheck": "tsgo --noEmit",
+		"test:native-media": "node scripts/native-media-integration.mjs",
+		"test:native-media:strict": "node scripts/native-media-integration.mjs --strict"
 	},
 	"dependencies": {
-		"@electron-webauthn/native": "0.0.6",
+		"@fluxer/voice_engine_v2": "workspace:*",
 		"@simplewebauthn/browser": "13.2.2",
-		"electron-squirrel-startup": "1.0.1",
-		"electron-webauthn-mac": "1.0.0",
-		"node-mac-permissions": "2.5.0",
+		"franc-min": "6.2.0",
+		"hunspell-asm": "4.0.2",
 		"update-electron-app": "3.1.2",
-		"ws": "8.19.0"
+		"velopack": "0.0.1298"
 	},
 	"devDependencies": {
-		"@types/ws": "8.18.1",
+		"@types/node": "24.10.9",
 		"@typescript/native-preview": "7.0.0-dev.20260130.1",
-		"electron": "40.0.0",
-		"electron-builder": "26.4.0",
-		"electron-builder-squirrel-windows": "26.4.0",
-		"esbuild": "0.27.2"
+		"electron": "41.2.2",
+		"electron-builder": "26.9.0",
+		"esbuild": "0.27.2",
+		"typescript": "5.9.3"
+	},
+	"knip": {
+		"ignoreDependencies": [
+			"electron-builder"
+		]
 	},
 	"optionalDependencies": {
+		"@fluxer/linux-audio-capture": "file:./native/linux-audio-capture",
+		"@fluxer/linux-evdev": "file:./native/linux-evdev",
+		"@fluxer/linux-input-hook": "file:./native/linux-input-hook",
+		"@fluxer/linux-notifications": "file:./native/linux-notifications",
+		"@fluxer/linux-portals": "file:./native/linux-portals",
+		"@fluxer/linux-screen-capture": "file:./native/linux-screen-capture",
+		"@fluxer/mac-app-audio": "file:./native/mac-app-audio",
+		"@fluxer/mac-clipboard": "file:./native/mac-clipboard",
+		"@fluxer/mac-screen-capture": "file:./native/mac-screen-capture",
+		"@fluxer/mac-sysctl": "file:./native/mac-sysctl",
+		"@fluxer/mac-tcc": "file:./native/mac-tcc",
+		"@fluxer/macos-input-hook": "file:./native/macos-input-hook",
+		"@fluxer/platform-info": "file:./native/platform-info",
+		"@fluxer/system-hunspell": "file:./native/system-hunspell",
+		"@fluxer/webauthn": "file:./native/webauthn",
+		"@fluxer/webrtc-sender": "file:./native/webrtc-sender",
+		"@fluxer/win-clipboard": "file:./native/win-clipboard",
+		"@fluxer/win-shell": "file:./native/win-shell",
+		"@fluxer/win-toast": "file:./native/win-toast",
+		"@fluxer/win-game-capture": "file:./native/win-game-capture",
+		"@fluxer/win-process-loopback": "file:./native/win-process-loopback",
+		"@fluxer/windows-input-hook": "file:./native/windows-input-hook",
 		"electron-log": "5.4.3",
-		"uiohook-napi": "1.5.4"
+		"node-mac-permissions": "2.5.0"
 	}
 }

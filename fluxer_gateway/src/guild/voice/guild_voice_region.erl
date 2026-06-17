@@ -1,27 +1,19 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(guild_voice_region).
+-typing([eqwalizer]).
 
 -export([switch_voice_region_handler/2]).
 -export([switch_voice_region/3]).
 
+-export_type([
+    guild_state/0,
+    guild_reply/1,
+    voice_state/0
+]).
+
 -type guild_state() :: map().
--type guild_reply(T) :: {reply, T, guild_state()}.
+-type guild_reply(T) :: {reply, T | {error, atom(), atom()}, guild_state()}.
 -type voice_state() :: map().
 
 -ifdef(TEST).
@@ -36,60 +28,77 @@ switch_voice_region_handler(Request, State) ->
         undefined ->
             {reply, gateway_errors:error(voice_channel_not_found), State};
         _ ->
-            ChannelType = maps:get(<<"type">>, Channel, 0),
-            case ChannelType of
-                2 ->
-                    {reply, #{success => true}, State};
-                _ ->
-                    {reply, gateway_errors:error(voice_channel_not_voice), State}
-            end
+            switch_voice_region_channel_reply(Channel, State)
+    end.
+
+-spec switch_voice_region_channel_reply(map(), guild_state()) -> guild_reply(map()).
+switch_voice_region_channel_reply(Channel, State) ->
+    case map_utils:get_integer(Channel, <<"type">>, undefined) of
+        2 -> {reply, #{success => true}, State};
+        _ -> {reply, gateway_errors:error(voice_channel_not_voice), State}
     end.
 
 -spec switch_voice_region(integer(), integer(), pid()) -> ok.
 switch_voice_region(GuildId, ChannelId, GuildPid) ->
     case gen_server:call(GuildPid, {get_sessions}, 10000) of
         State when is_map(State) ->
-            VoiceStates = voice_state_utils:voice_states(State),
-            UsersInChannel = collect_users_in_channel(VoiceStates, ChannelId),
-            lists:foreach(
-                fun({UserId, SessionId, ExistingConnectionId, VoiceState}) ->
-                    case SessionId of
-                        undefined ->
-                            ok;
-                        _ ->
-                            send_voice_server_update_for_region_switch(
-                                GuildId, ChannelId, UserId, SessionId, ExistingConnectionId,
-                                VoiceState, GuildPid
-                            )
-                    end
-                end,
-                UsersInChannel
-            );
+            do_switch_voice_region(GuildId, ChannelId, GuildPid, State);
         _ ->
             ok
     end.
+
+-spec do_switch_voice_region(integer(), integer(), pid(), map()) -> ok.
+do_switch_voice_region(GuildId, ChannelId, GuildPid, State) ->
+    VoiceStates = voice_state_utils:voice_states(State),
+    UsersInChannel = collect_users_in_channel(VoiceStates, ChannelId),
+    lists:foreach(
+        fun(UserInfo) ->
+            maybe_send_region_switch_update(GuildId, ChannelId, GuildPid, UserInfo)
+        end,
+        UsersInChannel
+    ).
 
 -spec collect_users_in_channel(map(), integer()) ->
     [{integer(), binary() | undefined, binary(), voice_state()}].
 collect_users_in_channel(VoiceStates, ChannelId) ->
     maps:fold(
         fun(ConnectionId, VoiceState, Acc) ->
-            case voice_state_utils:voice_state_channel_id(VoiceState) of
-                ChannelId ->
-                    case voice_state_utils:voice_state_user_id(VoiceState) of
-                        undefined ->
-                            Acc;
-                        UserId ->
-                            SessionId = maps:get(<<"session_id">>, VoiceState, undefined),
-                            [{UserId, SessionId, ConnectionId, VoiceState} | Acc]
-                    end;
-                _ ->
-                    Acc
-            end
+            collect_user_in_channel(ConnectionId, VoiceState, ChannelId, Acc)
         end,
         [],
         VoiceStates
     ).
+
+-spec maybe_send_region_switch_update(
+    integer(), integer(), pid(), {integer(), binary() | undefined, binary(), voice_state()}
+) -> ok.
+maybe_send_region_switch_update(
+    _GuildId, _ChannelId, _GuildPid, {_UserId, undefined, _ConnId, _VS}
+) ->
+    ok;
+maybe_send_region_switch_update(
+    GuildId, ChannelId, GuildPid, {UserId, SessionId, ExistingConnectionId, VoiceState}
+) ->
+    send_voice_server_update_for_region_switch(
+        GuildId, ChannelId, UserId, SessionId, ExistingConnectionId, VoiceState, GuildPid
+    ).
+
+-spec collect_user_in_channel(binary(), voice_state(), integer(), list()) -> list().
+collect_user_in_channel(ConnectionId, VoiceState, ChannelId, Acc) ->
+    case voice_state_utils:voice_state_channel_id(VoiceState) of
+        ChannelId -> collect_user_voice_state(ConnectionId, VoiceState, Acc);
+        _ -> Acc
+    end.
+
+-spec collect_user_voice_state(binary(), voice_state(), list()) -> list().
+collect_user_voice_state(ConnectionId, VoiceState, Acc) ->
+    case voice_state_utils:voice_state_user_id(VoiceState) of
+        undefined ->
+            Acc;
+        UserId ->
+            SessionId = maps:get(<<"session_id">>, VoiceState, undefined),
+            [{UserId, SessionId, ConnectionId, VoiceState} | Acc]
+    end.
 
 -spec send_voice_server_update_for_region_switch(
     integer(), integer(), integer(), binary(), binary(), voice_state(), pid()
@@ -99,41 +108,113 @@ send_voice_server_update_for_region_switch(
 ) ->
     case gen_server:call(GuildPid, {get_sessions}, 10000) of
         State when is_map(State) ->
-            VoicePermissions = voice_utils:compute_voice_permissions(UserId, ChannelId, State),
-            TokenNonce = voice_utils:generate_token_nonce(),
-            case
-                guild_voice_connection:request_voice_token(
-                    GuildId, ChannelId, UserId, ExistingConnectionId, VoicePermissions, TokenNonce
-                )
-            of
-                {ok, TokenData} ->
-                    Token = maps:get(token, TokenData),
-                    Endpoint = maps:get(endpoint, TokenData),
-                    ConnectionId = maps:get(connection_id, TokenData),
-                    PendingMetadata = build_pending_metadata(
-                        UserId, GuildId, ChannelId, SessionId, ExistingVoiceState, TokenNonce
-                    ),
-                    _ = store_pending_connection(
-                        GuildId, GuildPid, ConnectionId, PendingMetadata
-                    ),
-                    guild_voice_broadcast:broadcast_voice_server_update_to_session(
-                        GuildId,
-                        ChannelId,
-                        SessionId,
-                        Token,
-                        Endpoint,
-                        ConnectionId,
-                        State
-                    );
-                {error, _Reason} ->
-                    ok
-            end;
+            request_and_broadcast_region_switch(
+                GuildId,
+                ChannelId,
+                UserId,
+                SessionId,
+                ExistingConnectionId,
+                ExistingVoiceState,
+                GuildPid,
+                State
+            );
         _ ->
             ok
     end.
 
--spec build_pending_metadata(integer(), integer(), integer(), binary(), voice_state(), binary()) -> map().
-build_pending_metadata(UserId, GuildId, ChannelId, SessionId, ExistingVoiceState, TokenNonce) ->
+-spec request_and_broadcast_region_switch(
+    integer(),
+    integer(),
+    integer(),
+    binary(),
+    binary(),
+    voice_state(),
+    pid(),
+    map()
+) -> ok.
+request_and_broadcast_region_switch(
+    GuildId,
+    ChannelId,
+    UserId,
+    SessionId,
+    ExistingConnectionId,
+    ExistingVoiceState,
+    GuildPid,
+    State
+) ->
+    VoicePerms = voice_utils:compute_voice_permissions(UserId, ChannelId, State),
+    TokenNonce = voice_utils:generate_token_nonce(),
+    Lat = maps:get(<<"latitude">>, ExistingVoiceState, undefined),
+    Lng = maps:get(<<"longitude">>, ExistingVoiceState, undefined),
+    TokenResult = guild_voice_connection:request_voice_token(
+        GuildId,
+        ChannelId,
+        UserId,
+        ExistingConnectionId,
+        VoicePerms,
+        TokenNonce,
+        Lat,
+        Lng
+    ),
+    Switch = #{
+        guild_id => GuildId,
+        channel_id => ChannelId,
+        user_id => UserId,
+        session_id => SessionId,
+        existing_voice_state => ExistingVoiceState,
+        guild_pid => GuildPid,
+        state => State,
+        token_nonce => TokenNonce
+    },
+    handle_region_token_result(TokenResult, Switch).
+
+-spec handle_region_token_result({ok, map()} | {error, term()}, map()) -> ok.
+handle_region_token_result({ok, TokenData}, Switch) ->
+    broadcast_region_switch(
+        maps:get(guild_id, Switch),
+        maps:get(channel_id, Switch),
+        maps:get(user_id, Switch),
+        maps:get(session_id, Switch),
+        maps:get(existing_voice_state, Switch),
+        maps:get(guild_pid, Switch),
+        maps:get(state, Switch),
+        maps:get(token_nonce, Switch),
+        TokenData
+    );
+handle_region_token_result({error, _Reason}, _Switch) ->
+    ok.
+
+-spec broadcast_region_switch(
+    integer(), integer(), integer(), binary(), voice_state(), pid(), map(), binary(), map()
+) -> ok.
+broadcast_region_switch(
+    GuildId,
+    ChannelId,
+    UserId,
+    SessionId,
+    ExistingVoiceState,
+    GuildPid,
+    State,
+    TokenNonce,
+    TokenData
+) ->
+    Token = maps:get(token, TokenData),
+    Endpoint = maps:get(endpoint, TokenData),
+    ConnectionId = maps:get(connection_id, TokenData),
+    PendingMetadata = build_pending_metadata(
+        UserId, GuildId, ChannelId, SessionId, ExistingVoiceState, TokenNonce, TokenData
+    ),
+    _ = store_pending_connection(GuildId, GuildPid, ConnectionId, PendingMetadata),
+    guild_voice_broadcast:broadcast_voice_server_update_to_session(
+        GuildId, ChannelId, SessionId, Token, Endpoint, ConnectionId, State
+    ).
+
+-spec build_pending_metadata(
+    integer(), integer(), integer(), binary(), voice_state(), binary(), map()
+) -> map().
+build_pending_metadata(
+    UserId, GuildId, ChannelId, SessionId, ExistingVoiceState, TokenNonce, TokenData
+) ->
     Now = erlang:system_time(millisecond),
     #{
         user_id => UserId,
@@ -148,6 +229,10 @@ build_pending_metadata(UserId, GuildId, ChannelId, SessionId, ExistingVoiceState
         server_mute => maps:get(<<"mute">>, ExistingVoiceState, false),
         server_deaf => maps:get(<<"deaf">>, ExistingVoiceState, false),
         member => maps:get(<<"member">>, ExistingVoiceState, #{}),
+        latitude => maps:get(<<"latitude">>, ExistingVoiceState, undefined),
+        longitude => maps:get(<<"longitude">>, ExistingVoiceState, undefined),
+        region_id => maps:get(region_id, TokenData, undefined),
+        server_id => maps:get(server_id, TokenData, undefined),
         viewer_stream_keys => [],
         token_nonce => TokenNonce,
         created_at => Now,
@@ -165,10 +250,7 @@ store_pending_connection(GuildId, GuildPid, ConnectionId, Metadata) ->
 
 -spec resolve_voice_server(integer(), pid()) -> pid().
 resolve_voice_server(GuildId, FallbackPid) ->
-    case guild_voice_server:lookup(GuildId) of
-        {ok, VoicePid} -> VoicePid;
-        {error, not_found} -> FallbackPid
-    end.
+    guild_voice_server:resolve(GuildId, FallbackPid).
 
 -ifdef(TEST).
 
@@ -199,8 +281,7 @@ switch_voice_region_handler_success_test() ->
         }
     },
     Request = #{channel_id => 100},
-    {reply, Reply, _} = switch_voice_region_handler(Request, State),
-    ?assertEqual(true, maps:get(success, Reply)).
+    {reply, #{success := true}, _} = switch_voice_region_handler(Request, State).
 
 collect_users_in_channel_test() ->
     VoiceState = #{
@@ -215,5 +296,18 @@ collect_users_in_channel_test() ->
     ?assertEqual(10, UserId),
     ?assertEqual(<<"sess1">>, SessionId),
     ?assertEqual(<<"conn1">>, ConnectionId).
+
+build_pending_metadata_preserves_voice_routing_test() ->
+    Metadata = build_pending_metadata(
+        10,
+        20,
+        30,
+        <<"sess1">>,
+        #{},
+        <<"nonce">>,
+        #{region_id => <<"us-east">>, server_id => <<"voice-ewr-1">>}
+    ),
+    ?assertEqual(<<"us-east">>, maps:get(region_id, Metadata)),
+    ?assertEqual(<<"voice-ewr-1">>, maps:get(server_id, Metadata)).
 
 -endif.

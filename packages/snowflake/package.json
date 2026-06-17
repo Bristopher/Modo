@@ -4,12 +4,12 @@
 	"private": true,
 	"type": "module",
 	"exports": {
-		".": "./src/Snowflake.tsx",
+		".": "./src/Snowflake.ts",
 		"./src/*": "./src/*",
 		"./*": "./*"
 	},
-	"main": "./src/Snowflake.tsx",
-	"types": "./src/Snowflake.tsx",
+	"main": "./src/Snowflake.ts",
+	"types": "./src/Snowflake.ts",
 	"scripts": {
 		"test": "vitest run",
 		"test:watch": "vitest",

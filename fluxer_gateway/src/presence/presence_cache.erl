@@ -1,338 +1,275 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(presence_cache).
+-typing([eqwalizer]).
 -behaviour(gen_server).
 
 -include_lib("fluxer_gateway/include/timeout_config.hrl").
 
 -compile({no_auto_import, [get/1, put/2]}).
 
--export([start_link/0, put/2, delete/1, get/1, bulk_get/1, get_memory_stats/0]).
+-export([
+    start_link/0,
+    put/2,
+    delete/1,
+    get/1,
+    bulk_get/1,
+    get_memory_stats/0,
+    pending_handoff_count/0,
+    get_pending_handoff_count/0,
+    rebalance/0,
+    rebalance_async/0,
+    handle_nodedown/1,
+    handle_nodeup/1,
+    trigger_anti_entropy/0,
+    generation/0,
+    pending_operations_count/0,
+    handoff_to_target/1
+]).
+
+-export([
+    put_local/3,
+    delete_local/2,
+    local_snapshot/1
+]).
+
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--type shard() :: #{pid := pid(), ref := reference()}.
--type state() :: #{shards := #{non_neg_integer() => shard()}, shard_count := pos_integer()}.
+-define(PENDING_HANDOFF_RETRY_MSG, pending_handoff_retry).
+-define(ANTI_ENTROPY_MSG, anti_entropy_tick).
+
+-type state() :: map().
 
 -spec start_link() -> {ok, pid()} | {error, term()}.
 start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+    normalize_start_link(gen_server:start_link({local, ?MODULE}, ?MODULE, [], [])).
 
 -spec put(integer(), map()) -> ok.
 put(UserId, Presence) when is_integer(UserId), is_map(Presence) ->
-    gen_server:call(?MODULE, {put, UserId, Presence}, ?DEFAULT_GEN_SERVER_TIMEOUT).
+    case persistent_term:get(presence_noop, false) of
+        true -> ok;
+        false -> presence_cache_api:cast_owner(UserId, {put, UserId, Presence})
+    end.
 
 -spec delete(integer()) -> ok.
 delete(UserId) when is_integer(UserId) ->
-    gen_server:call(?MODULE, {delete, UserId}, ?DEFAULT_GEN_SERVER_TIMEOUT).
+    case persistent_term:get(presence_noop, false) of
+        true -> ok;
+        false -> presence_cache_api:cast_owner(UserId, {delete, UserId})
+    end.
 
 -spec get(integer()) -> {ok, map()} | not_found.
 get(UserId) when is_integer(UserId) ->
-    gen_server:call(?MODULE, {get, UserId}, ?DEFAULT_GEN_SERVER_TIMEOUT).
+    case persistent_term:get(presence_noop, false) of
+        true -> not_found;
+        false -> presence_cache_bulk:get_from_cluster(UserId)
+    end.
 
 -spec bulk_get([integer()]) -> [map()].
 bulk_get(UserIds) when is_list(UserIds) ->
-    gen_server:call(?MODULE, {bulk_get, UserIds}, ?DEFAULT_GEN_SERVER_TIMEOUT).
+    case persistent_term:get(presence_noop, false) of
+        true -> [];
+        false -> presence_cache_bulk:bulk_get_inner(UserIds)
+    end.
 
 -spec get_memory_stats() -> {ok, map()} | {error, term()}.
 get_memory_stats() ->
-    gen_server:call(?MODULE, get_memory_stats, ?DEFAULT_GEN_SERVER_TIMEOUT).
+    case presence_cache_api:safe_call_if_enabled(get_memory_stats, {error, not_available}) of
+        {ok, Stats} when is_map(Stats) -> {ok, Stats};
+        {error, Reason} -> {error, Reason};
+        _ -> {error, not_available}
+    end.
+
+-spec get_pending_handoff_count() -> non_neg_integer().
+get_pending_handoff_count() ->
+    case presence_cache_api:safe_call_if_enabled(get_pending_handoff_count, 0) of
+        Count when is_integer(Count), Count >= 0 -> Count;
+        _ -> 0
+    end.
+
+-spec pending_handoff_count() -> non_neg_integer().
+pending_handoff_count() ->
+    get_pending_handoff_count().
+
+-spec rebalance_async() -> ok.
+rebalance_async() ->
+    presence_cache_api:safe_cast_if_enabled(rebalance).
+
+-spec rebalance() -> ok.
+rebalance() ->
+    presence_cache_api:rebalance().
+
+-spec handle_nodedown(node()) -> ok.
+handle_nodedown(Node) when is_atom(Node) ->
+    presence_cache_api:safe_cast_if_enabled({nodedown_grace, Node}).
+
+-spec handle_nodeup(node()) -> ok.
+handle_nodeup(Node) when is_atom(Node) ->
+    presence_cache_api:safe_cast_if_enabled({nodeup_cancel_grace, Node}).
+
+-spec trigger_anti_entropy() -> ok.
+trigger_anti_entropy() ->
+    presence_cache_api:safe_cast_if_enabled(anti_entropy_sync).
+
+-spec generation() -> non_neg_integer().
+generation() ->
+    presence_cache_api:generation().
+
+-spec pending_operations_count() -> non_neg_integer().
+pending_operations_count() ->
+    get_pending_handoff_count().
+
+-spec handoff_to_target(node()) -> ok.
+handoff_to_target(TargetNode) ->
+    presence_cache_api:handoff_to_target(TargetNode).
+
+-spec put_local(integer(), map(), state()) -> {ok, state()}.
+put_local(UserId, Presence, State) ->
+    {_Reply, NewState} = presence_cache_shards:forward_put(UserId, Presence, State),
+    {ok, presence_cache_rebalance:increment_generation(NewState)}.
+
+-spec delete_local(integer(), state()) -> {ok, state()}.
+delete_local(UserId, State) ->
+    {_Reply, NewState} = presence_cache_shards:forward_delete(UserId, State),
+    {ok, presence_cache_rebalance:increment_generation(NewState)}.
+
+-spec local_snapshot(state()) -> #{integer() => map()}.
+local_snapshot(State) ->
+    presence_cache_shards:local_snapshot(State).
 
 -spec init(list()) -> {ok, state()}.
 init([]) ->
     process_flag(trap_exit, true),
-    {ShardCount, _Source} = determine_shard_count(presence_cache_shards),
-    Shards = start_shards(ShardCount, #{}),
-    {ok, #{shards => Shards, shard_count => ShardCount}}.
+    erlang:process_flag(fullsweep_after, 10),
+    {ShardCount, _Source} = presence_cache_shards:determine_count(presence_cache_shards),
+    Shards = presence_cache_shards:start_all(ShardCount),
+    {ok, #{
+        shards => Shards,
+        shard_count => ShardCount,
+        pending_operations => #{},
+        pending_retry_timer => undefined,
+        pending_nodedown_cleanups => #{},
+        generation => 0,
+        anti_entropy_timer => presence_cache_rebalance:schedule_anti_entropy()
+    }}.
+
+-spec terminate(term(), state()) -> ok.
+terminate(_Reason, State) ->
+    presence_cache_rebalance:cancel_pending_retry_timer(State),
+    presence_cache_rebalance:cancel_all_grace_timers(State),
+    presence_cache_rebalance:cancel_anti_entropy_timer(State),
+    presence_cache_shards:stop_all(State),
+    ok.
+
+-spec code_change(term(), state(), term()) -> {ok, state()}.
+code_change(_OldVsn, State, _Extra) ->
+    erlang:garbage_collect(),
+    {ok, presence_cache_rebalance:ensure_pending_state(State)}.
 
 -spec handle_call(term(), gen_server:from(), state()) -> {reply, term(), state()}.
-handle_call({put, UserId, Presence}, _From, State) ->
-    {Reply, NewState} = forward_call(UserId, {put, UserId, Presence}, State),
+handle_call({put, UserId, Presence}, _From, State) when is_integer(UserId), is_map(Presence) ->
+    {reply, ok, presence_cache_ops:handle_put(UserId, Presence, State)};
+handle_call({put_local, UserId, Presence}, _From, State) when
+    is_integer(UserId), is_map(Presence)
+->
+    {Reply, NewState} = put_local(UserId, Presence, State),
     {reply, Reply, NewState};
-handle_call({delete, UserId}, _From, State) ->
-    {Reply, NewState} = forward_call(UserId, {delete, UserId}, State),
+handle_call({delete, UserId}, _From, State) when is_integer(UserId) ->
+    {reply, ok, presence_cache_ops:handle_delete(UserId, State)};
+handle_call({delete_local, UserId}, _From, State) when is_integer(UserId) ->
+    {Reply, NewState} = delete_local(UserId, State),
     {reply, Reply, NewState};
-handle_call({get, UserId}, _From, State) ->
-    {Reply, NewState} = forward_call(UserId, {get, UserId}, State),
+handle_call({get_local, UserId}, _From, State) when is_integer(UserId) ->
+    {Reply, NewState} = presence_cache_ops:get_local(UserId, State),
     {reply, Reply, NewState};
-handle_call({bulk_get, UserIds}, _From, State) ->
-    {Reply, NewState} = forward_bulk_get(UserIds, State),
-    {reply, Reply, NewState};
-handle_call(get_memory_stats, _From, State) ->
-    Count = maps:get(shard_count, State),
-    WordSize = erlang:system_info(wordsize),
-    TotalMemory = lists:foldl(
-        fun(Index, Acc) ->
-            TableName = presence_cache_shard:table_name(Index),
-            case ets:info(TableName, memory) of
-                undefined -> Acc;
-                Words -> Acc + (Words * WordSize)
-            end
-        end,
-        0,
-        lists:seq(0, Count - 1)
+handle_call(Request, From, State) ->
+    handle_call_extended(Request, From, State).
+
+-spec handle_call_extended(term(), gen_server:from(), state()) -> {reply, term(), state()}.
+handle_call_extended({bulk_get_local, UserIds}, _From, State) when is_list(UserIds) ->
+    {Reply, NewState} = presence_cache_shards:forward_bulk_get(
+        presence_cache_bulk:normalize_user_ids(UserIds), State
     ),
-    TotalEntries = lists:foldl(
-        fun(Index, Acc) ->
-            TableName = presence_cache_shard:table_name(Index),
-            case ets:info(TableName, size) of
-                undefined -> Acc;
-                Size -> Acc + Size
-            end
-        end,
-        0,
-        lists:seq(0, Count - 1)
+    {reply, Reply, NewState};
+handle_call_extended({bulk_get_local_map, UserIds}, _From, State) when is_list(UserIds) ->
+    {Reply, NewState} = presence_cache_shards:forward_bulk_get_map(
+        presence_cache_bulk:normalize_user_ids(UserIds), State
     ),
-    {reply, {ok, #{memory_bytes => TotalMemory, entry_count => TotalEntries}}, State};
-handle_call(_Request, _From, State) ->
+    {reply, Reply, NewState};
+handle_call_extended(rebalance, _From, State) ->
+    {reply, ok, presence_cache_rebalance:rebalance_ownership(State)};
+handle_call_extended({handoff_to_target, TargetNode}, _From, State) when is_atom(TargetNode) ->
+    {reply, ok, presence_cache_rebalance:handoff_all_to_target(TargetNode, State)};
+handle_call_extended(get_pending_handoff_count, _From, State) ->
+    {reply, presence_cache_rebalance:count_pending_operations(State), State};
+handle_call_extended(get_memory_stats, _From, State) ->
+    {reply, presence_cache_shards:memory_stats(State), State};
+handle_call_extended(get_generation, _From, State) ->
+    {reply, maps:get(generation, State, 0), State};
+handle_call_extended(_Request, _From, State) ->
     {reply, ok, State}.
 
 -spec handle_cast(term(), state()) -> {noreply, state()}.
+handle_cast(rebalance, State) ->
+    {noreply, presence_cache_rebalance:rebalance_ownership(State)};
+handle_cast({nodedown_grace, Node}, State) when is_atom(Node) ->
+    {noreply, presence_cache_rebalance:start_nodedown_grace(Node, State)};
+handle_cast({nodeup_cancel_grace, Node}, State) when is_atom(Node) ->
+    {noreply, presence_cache_rebalance:cancel_nodedown_grace(Node, State)};
+handle_cast(anti_entropy_sync, State) ->
+    {noreply, presence_cache_rebalance:perform_anti_entropy(State)};
+handle_cast({anti_entropy_request, FromNode, RemoteGeneration}, State) when
+    is_atom(FromNode), is_integer(RemoteGeneration), RemoteGeneration >= 0
+->
+    presence_cache_rebalance:handle_anti_entropy_request(FromNode, RemoteGeneration, State);
+handle_cast({anti_entropy_digest_request, FromNode, RemoteDigest}, State) when
+    is_atom(FromNode), is_binary(RemoteDigest)
+->
+    presence_cache_rebalance:handle_anti_entropy_digest_request(FromNode, RemoteDigest, State);
+handle_cast({anti_entropy_response, Entries}, State) when is_map(Entries) ->
+    {noreply,
+        presence_cache_rebalance:merge_anti_entropy_entries(
+            presence_cache_bulk:sanitize_presence_map(Entries), State
+        )};
+handle_cast({put, UserId, Presence}, State) when is_integer(UserId), is_map(Presence) ->
+    {noreply, presence_cache_ops:handle_put(UserId, Presence, State)};
+handle_cast({delete, UserId}, State) when is_integer(UserId) ->
+    {noreply, presence_cache_ops:handle_delete(UserId, State)};
+handle_cast({put_local, UserId, Presence}, State) when is_integer(UserId), is_map(Presence) ->
+    {_Reply, NewState} = put_local(UserId, Presence, State),
+    {noreply, NewState};
+handle_cast({delete_local, UserId}, State) when is_integer(UserId) ->
+    {_Reply, NewState} = delete_local(UserId, State),
+    {noreply, NewState};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
 -spec handle_info(term(), state()) -> {noreply, state()}.
-handle_info({'DOWN', Ref, process, _Pid, _Reason}, State) ->
-    Shards = maps:get(shards, State),
-    case find_shard_by_ref(Ref, Shards) of
-        {ok, Index} ->
-            {_Shard, NewState} = restart_shard(Index, State),
-            {noreply, NewState};
-        not_found ->
-            {noreply, State}
-    end;
-handle_info({'EXIT', Pid, _Reason}, State) ->
-    Shards = maps:get(shards, State),
-    case find_shard_by_pid(Pid, Shards) of
-        {ok, Index} ->
-            {_Shard, NewState} = restart_shard(Index, State),
-            {noreply, NewState};
-        not_found ->
-            {noreply, State}
-    end;
+handle_info({'DOWN', Ref, process, _Pid, _Reason}, State) when is_reference(Ref) ->
+    State1 = presence_cache_rebalance:ensure_pending_state(State),
+    {noreply, presence_cache_shards:handle_down_by_ref(Ref, State1)};
+handle_info(?PENDING_HANDOFF_RETRY_MSG, State) ->
+    State1 = (presence_cache_rebalance:ensure_pending_state(State))#{
+        pending_retry_timer => undefined
+    },
+    {noreply, presence_cache_rebalance:rebalance_ownership(State1)};
+handle_info({'EXIT', Pid, _Reason}, State) when is_pid(Pid) ->
+    State1 = presence_cache_rebalance:ensure_pending_state(State),
+    {noreply, presence_cache_shards:handle_down_by_pid(Pid, State1)};
+handle_info({nodedown_grace_expired, Node}, State) when is_atom(Node) ->
+    {noreply, presence_cache_rebalance:process_nodedown_grace_expiry(Node, State)};
+handle_info(?ANTI_ENTROPY_MSG, State) ->
+    State1 = presence_cache_rebalance:perform_anti_entropy(State),
+    {noreply, State1#{anti_entropy_timer => presence_cache_rebalance:schedule_anti_entropy()}};
+handle_info({'ETS-TRANSFER', _Table, _FromPid, _HeirData}, State) ->
+    {noreply, State};
 handle_info(_Info, State) ->
-    {noreply, State}.
+    {noreply, presence_cache_rebalance:ensure_pending_state(State)}.
 
--spec terminate(term(), state()) -> ok.
-terminate(_Reason, State) ->
-    Shards = maps:get(shards, State),
-    lists:foreach(
-        fun(Shard) ->
-            Pid = maps:get(pid, Shard),
-            catch gen_server:stop(Pid, shutdown, 5000)
-        end,
-        maps:values(Shards)
-    ),
-    ok.
-
--spec code_change(term(), term(), term()) -> {ok, state()}.
-code_change(_OldVsn, State, _Extra) when is_map(State) ->
-    {ok, State};
-code_change(_OldVsn, {state, Shards, ShardCount}, _Extra) ->
-    ConvertedShards = maps:map(
-        fun(_Index, {shard, Pid, Ref}) ->
-            #{pid => Pid, ref => Ref}
-        end,
-        Shards
-    ),
-    {ok, #{shards => ConvertedShards, shard_count => ShardCount}}.
-
--spec determine_shard_count(atom()) -> {pos_integer(), configured | auto}.
-determine_shard_count(ConfigKey) ->
-    case fluxer_gateway_env:get(ConfigKey) of
-        Value when is_integer(Value), Value > 0 ->
-            {Value, configured};
-        _ ->
-            {default_shard_count(), auto}
-    end.
-
--spec default_shard_count() -> pos_integer().
-default_shard_count() ->
-    Candidates = [
-        erlang:system_info(logical_processors_available), erlang:system_info(schedulers_online)
-    ],
-    lists:max([C || C <- Candidates, is_integer(C), C > 0] ++ [1]).
-
--spec start_shards(pos_integer(), #{}) -> #{non_neg_integer() => shard()}.
-start_shards(Count, Acc) ->
-    lists:foldl(
-        fun(Index, MapAcc) ->
-            case start_shard(Index) of
-                {ok, Shard} ->
-                    maps:put(Index, Shard, MapAcc);
-                {error, _Reason} ->
-                    MapAcc
-            end
-        end,
-        Acc,
-        lists:seq(0, Count - 1)
-    ).
-
--spec start_shard(non_neg_integer()) -> {ok, shard()} | {error, term()}.
-start_shard(Index) ->
-    case presence_cache_shard:start_link(Index) of
-        {ok, Pid} ->
-            Ref = erlang:monitor(process, Pid),
-            {ok, #{pid => Pid, ref => Ref}};
-        Error ->
-            Error
-    end.
-
--spec restart_shard(non_neg_integer(), state()) -> {shard(), state()}.
-restart_shard(Index, State) ->
-    case start_shard(Index) of
-        {ok, Shard} ->
-            Shards = maps:get(shards, State),
-            Updated = State#{shards := maps:put(Index, Shard, Shards)},
-            {Shard, Updated};
-        {error, _Reason} ->
-            Dummy = #{pid => spawn(fun() -> exit(normal) end), ref => make_ref()},
-            {Dummy, State}
-    end.
-
--spec forward_call(term(), term(), state()) -> {term(), state()}.
-forward_call(Key, Request, State) ->
-    {Index, State1} = ensure_shard(Key, State),
-    call_shard(Index, Request, State1).
-
--spec forward_bulk_get([integer()], state()) -> {[map()], state()}.
-forward_bulk_get(UserIds, State) ->
-    Count = maps:get(shard_count, State),
-    Unique = lists:usort(UserIds),
-    Groups = rendezvous_router:group_keys(Unique, Count),
-    {Results, FinalState} =
-        lists:foldl(
-            fun({Index, Ids}, {AccResults, AccState}) ->
-                {Reply, State1} = call_shard(Index, {bulk_get, Ids}, AccState),
-                case Reply of
-                    List when is_list(List) ->
-                        {Reply ++ AccResults, State1};
-                    _ ->
-                        {AccResults, State1}
-                end
-            end,
-            {[], State},
-            Groups
-        ),
-    {lists:reverse(Results), FinalState}.
-
--spec call_shard(non_neg_integer(), term(), state()) -> {term(), state()}.
-call_shard(Index, Request, State) ->
-    Shards = maps:get(shards, State),
-    Shard = maps:get(Index, Shards),
-    Pid = maps:get(pid, Shard),
-    case catch gen_server:call(Pid, Request, ?DEFAULT_GEN_SERVER_TIMEOUT) of
-        {'EXIT', _} ->
-            {_Shard, State1} = restart_shard(Index, State),
-            call_shard(Index, Request, State1);
-        Reply ->
-            {Reply, State}
-    end.
-
--spec ensure_shard(term(), state()) -> {non_neg_integer(), state()}.
-ensure_shard(Key, State) ->
-    Count = maps:get(shard_count, State),
-    Index = select_shard(Key, Count),
-    ensure_shard_for_index(Index, State).
-
--spec ensure_shard_for_index(non_neg_integer(), state()) -> {non_neg_integer(), state()}.
-ensure_shard_for_index(Index, State) ->
-    Shards = maps:get(shards, State),
-    case maps:get(Index, Shards, undefined) of
-        undefined ->
-            {_Shard, NewState} = restart_shard(Index, State),
-            {Index, NewState};
-        #{pid := Pid} when is_pid(Pid) ->
-            case erlang:is_process_alive(Pid) of
-                true ->
-                    {Index, State};
-                false ->
-                    {_Shard, NewState} = restart_shard(Index, State),
-                    {Index, NewState}
-            end
-    end.
-
--spec select_shard(term(), pos_integer()) -> non_neg_integer().
-select_shard(Key, Count) when Count > 0 ->
-    rendezvous_router:select(Key, Count).
-
--spec find_shard_by_ref(reference(), #{non_neg_integer() => shard()}) ->
-    {ok, non_neg_integer()} | not_found.
-find_shard_by_ref(Ref, Shards) ->
-    maps:fold(
-        fun
-            (Index, #{ref := R}, _) when R =:= Ref -> {ok, Index};
-            (_, _, Acc) -> Acc
-        end,
-        not_found,
-        Shards
-    ).
-
--spec find_shard_by_pid(pid(), #{non_neg_integer() => shard()}) ->
-    {ok, non_neg_integer()} | not_found.
-find_shard_by_pid(Pid, Shards) ->
-    maps:fold(
-        fun
-            (Index, #{pid := P}, _) when P =:= Pid -> {ok, Index};
-            (_, _, Acc) -> Acc
-        end,
-        not_found,
-        Shards
-    ).
-
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
-
-put_and_get_visible_status_test() ->
-    {ok, Pid} = maybe_start_for_test(),
-    Presence = #{<<"status">> => <<"online">>},
-    ?assertEqual(ok, put(1, Presence)),
-    ?assertMatch({ok, _}, get(1)),
-    ?assertEqual(ok, gen_server:stop(Pid)).
-
-put_offline_evicted_test() ->
-    {ok, Pid} = maybe_start_for_test(),
-    Presence = #{<<"status">> => <<"offline">>},
-    ?assertEqual(ok, put(2, Presence)),
-    ?assertEqual(not_found, get(2)),
-    ?assertEqual(ok, gen_server:stop(Pid)).
-
-bulk_get_across_shards_test() ->
-    {ok, Pid} = maybe_start_for_test(),
-    Visible = #{<<"status">> => <<"online">>, <<"user">> => #{<<"id">> => <<"3">>}},
-    put(3, Visible),
-    put(4, Visible),
-    Results = bulk_get([3, 4, 3]),
-    ?assertEqual(2, length(Results)),
-    ?assertEqual(ok, gen_server:stop(Pid)).
-
-select_shard_test() ->
-    ?assert(select_shard(100, 4) >= 0),
-    ?assert(select_shard(100, 4) < 4).
-
-find_shard_by_ref_test() ->
-    Ref1 = make_ref(),
-    Shards = #{0 => #{pid => self(), ref => Ref1}},
-    ?assertEqual({ok, 0}, find_shard_by_ref(Ref1, Shards)),
-    ?assertEqual(not_found, find_shard_by_ref(make_ref(), Shards)).
-
-maybe_start_for_test() ->
-    case whereis(?MODULE) of
-        undefined -> start_link();
-        Existing when is_pid(Existing) -> {ok, Existing}
-    end.
--endif.
+-spec normalize_start_link(gen_server:start_ret()) -> {ok, pid()} | {error, term()}.
+normalize_start_link({ok, Pid}) ->
+    {ok, Pid};
+normalize_start_link({error, Reason}) ->
+    {error, Reason};
+normalize_start_link(ignore) ->
+    {error, ignore}.

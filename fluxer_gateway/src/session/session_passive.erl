@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(session_passive).
+-typing([eqwalizer]).
 
 -export([
     is_passive/2,
@@ -27,10 +13,19 @@
     should_receive_typing/2,
     set_typing_override/3,
     get_typing_override/2,
+    is_user_mentioned/2,
     is_guild_synced/2,
     mark_guild_synced/2,
-    clear_guild_synced/2
+    clear_guild_synced/2,
+    is_message_event/1,
+    is_lazy_guild_event/1,
+    extract_role_ids/1,
+    mention_role_set/1
 ]).
+
+-export_type([guild_id/0, user_id/0, event/0, session_data/0, guild_state/0]).
+
+-define(MAX_MENTION_ROLES, 100).
 
 -type guild_id() :: session:guild_id().
 -type user_id() :: session:user_id().
@@ -52,44 +47,62 @@ is_passive(GuildId, SessionData) ->
 set_active(GuildId, SessionData) ->
     ActiveGuilds = maps:get(active_guilds, SessionData, sets:new()),
     NewActiveGuilds = sets:add_element(GuildId, ActiveGuilds),
-    maps:put(active_guilds, NewActiveGuilds, SessionData).
+    SessionData#{active_guilds => NewActiveGuilds}.
 
 -spec set_passive(guild_id(), session_data()) -> session_data().
 set_passive(GuildId, SessionData) ->
     ActiveGuilds = maps:get(active_guilds, SessionData, sets:new()),
     NewActiveGuilds = sets:del_element(GuildId, ActiveGuilds),
-    maps:put(active_guilds, NewActiveGuilds, SessionData).
+    SessionData#{active_guilds => NewActiveGuilds}.
 
--spec should_receive_event(event(), map(), guild_id(), session_data(), guild_state()) -> boolean().
+-spec should_receive_event(event(), map(), guild_id(), session_data(), guild_state()) ->
+    boolean().
+should_receive_event(typing_start, _EventData, GuildId, SessionData, State) ->
+    should_receive_typing(GuildId, SessionData, State);
 should_receive_event(Event, EventData, GuildId, SessionData, State) ->
-    case Event of
-        typing_start ->
-            should_receive_typing(GuildId, SessionData);
-        _ ->
-            case maps:get(bot, SessionData, false) of
-                true ->
-                    true;
-                false ->
-                    case is_lazy_guild_event(Event) of
-                        true ->
-                            case is_small_guild(State) of
-                                true ->
-                                    true;
-                                false ->
-                                    case is_passive(GuildId, SessionData) of
-                                        false ->
-                                            true;
-                                        true ->
-                                            should_passive_receive(Event, EventData, SessionData)
-                                    end
-                            end;
-                        false ->
-                            case is_passive(GuildId, SessionData) of
-                                false -> true;
-                                true -> should_passive_receive(Event, EventData, SessionData)
-                            end
-                    end
-            end
+    case bypasses_passive_filter(Event, EventData, SessionData) of
+        true ->
+            true;
+        false ->
+            should_receive_regular_event(Event, EventData, GuildId, SessionData, State)
+    end.
+
+-spec bypasses_passive_filter(event(), map(), session_data()) -> boolean().
+bypasses_passive_filter(guild_update, _EventData, _SessionData) ->
+    true;
+bypasses_passive_filter(guild_role_update, _EventData, _SessionData) ->
+    true;
+bypasses_passive_filter(guild_role_update_bulk, _EventData, _SessionData) ->
+    true;
+bypasses_passive_filter(channel_create, _EventData, _SessionData) ->
+    true;
+bypasses_passive_filter(channel_update, _EventData, _SessionData) ->
+    true;
+bypasses_passive_filter(channel_update_bulk, _EventData, _SessionData) ->
+    true;
+bypasses_passive_filter(channel_delete, _EventData, _SessionData) ->
+    true;
+bypasses_passive_filter(guild_member_update, EventData, SessionData) ->
+    is_session_user_event(EventData, SessionData);
+bypasses_passive_filter(_, _, _) ->
+    false.
+
+-spec should_receive_regular_event(event(), map(), guild_id(), session_data(), guild_state()) ->
+    boolean().
+should_receive_regular_event(Event, EventData, GuildId, SessionData, State) ->
+    case maps:get(bot, SessionData, false) of
+        true ->
+            true;
+        false ->
+            should_receive_non_bot(Event, EventData, GuildId, SessionData, State)
+    end.
+
+-spec should_receive_non_bot(event(), map(), guild_id(), session_data(), guild_state()) ->
+    boolean().
+should_receive_non_bot(Event, EventData, GuildId, SessionData, State) ->
+    case is_effectively_active(GuildId, SessionData, State) of
+        true -> true;
+        false -> should_passive_receive(Event, EventData, SessionData)
     end.
 
 -spec is_small_guild(guild_state()) -> boolean().
@@ -99,6 +112,10 @@ is_small_guild(State) ->
         undefined -> false;
         Count when is_integer(Count) -> Count =< 250
     end.
+
+-spec is_effectively_active(guild_id(), session_data(), guild_state()) -> boolean().
+is_effectively_active(GuildId, SessionData, State) ->
+    (not is_passive(GuildId, SessionData)) orelse is_small_guild(State).
 
 -spec is_message_event(event()) -> boolean().
 is_message_event(message_create) -> true;
@@ -112,6 +129,14 @@ is_lazy_guild_event(Event) ->
     is_message_event(Event) orelse Event =:= voice_state_update.
 
 -spec should_passive_receive(event(), map(), session_data()) -> boolean().
+should_passive_receive(channel_create, _EventData, _SessionData) ->
+    true;
+should_passive_receive(channel_update, _EventData, _SessionData) ->
+    true;
+should_passive_receive(channel_update_bulk, _EventData, _SessionData) ->
+    true;
+should_passive_receive(channel_delete, _EventData, _SessionData) ->
+    true;
 should_passive_receive(message_create, EventData, SessionData) ->
     Mentioned = is_user_mentioned(EventData, SessionData),
     case Mentioned of
@@ -123,52 +148,76 @@ should_passive_receive(message_create, EventData, SessionData) ->
 should_passive_receive(guild_delete, _EventData, _SessionData) ->
     true;
 should_passive_receive(guild_member_update, EventData, SessionData) ->
-    UserId = maps:get(user_id, SessionData),
-    MemberUser = maps:get(<<"user">>, EventData, #{}),
-    MemberUserId = map_utils:get_integer(MemberUser, <<"id">>, undefined),
-    UserId =:= MemberUserId;
+    is_session_user_event(EventData, SessionData);
 should_passive_receive(guild_member_remove, EventData, SessionData) ->
-    UserId = maps:get(user_id, SessionData),
-    MemberUser = maps:get(<<"user">>, EventData, #{}),
-    MemberUserId = map_utils:get_integer(MemberUser, <<"id">>, undefined),
-    UserId =:= MemberUserId;
+    is_session_user_event(EventData, SessionData);
+should_passive_receive(guild_audit_log_entry_create, _EventData, _SessionData) ->
+    true;
 should_passive_receive(passive_updates, _EventData, _SessionData) ->
     true;
 should_passive_receive(_, _, _) ->
     false.
 
+-spec is_session_user_event(map(), session_data()) -> boolean().
+is_session_user_event(EventData, SessionData) ->
+    UserId = maps:get(user_id, SessionData),
+    UserId =:= event_user_id(EventData).
+
+-spec event_user_id(map()) -> user_id() | undefined.
+event_user_id(EventData) ->
+    user_id(maps:get(<<"user">>, EventData, #{})).
+
+-spec user_id(term()) -> user_id() | undefined.
+user_id(User) when is_map(User) ->
+    snowflake_id:parse_maybe(maps:get(<<"id">>, User, undefined));
+user_id(_) ->
+    undefined.
+
 -spec is_user_mentioned(map(), session_data()) -> boolean().
 is_user_mentioned(EventData, SessionData) ->
     UserId = maps:get(user_id, SessionData),
-    MentionEveryone = maps:get(<<"mention_everyone">>, EventData, false),
+    RawMentionEveryone = maps:get(<<"mention_everyone">>, EventData, false),
+    MentionHere = maps:get(<<"mention_here">>, EventData, false),
+    MentionEveryone = RawMentionEveryone andalso not MentionHere,
     Mentions = maps:get(<<"mentions">>, EventData, []),
     MentionRoles = maps:get(<<"mention_roles">>, EventData, []),
     UserRoles = maps:get(user_roles, SessionData, []),
     MentionEveryone orelse
+        MentionHere orelse
         is_user_in_mentions(UserId, Mentions) orelse
         has_mentioned_role(UserRoles, MentionRoles).
 
 -spec is_user_in_mentions(user_id(), [map()]) -> boolean().
 is_user_in_mentions(_UserId, []) ->
     false;
-is_user_in_mentions(UserId, [#{<<"id">> := Id} | Rest]) when is_binary(Id) ->
-    case validation:validate_snowflake(<<"id">>, Id) of
-        {ok, ParsedId} ->
-            UserId =:= ParsedId orelse is_user_in_mentions(UserId, Rest);
-        {error, _, _} ->
-            is_user_in_mentions(UserId, Rest)
-    end;
-is_user_in_mentions(UserId, [_ | Rest]) ->
-    is_user_in_mentions(UserId, Rest).
+is_user_in_mentions(UserId, [Mention | Rest]) ->
+    user_id(Mention) =:= UserId orelse is_user_in_mentions(UserId, Rest).
 
 -spec has_mentioned_role([integer()], [binary() | integer()]) -> boolean().
 has_mentioned_role([], _MentionRoles) ->
     false;
-has_mentioned_role([RoleId | Rest], MentionRoles) ->
-    RoleIdBin = integer_to_binary(RoleId),
-    lists:member(RoleIdBin, MentionRoles) orelse
-        lists:member(RoleId, MentionRoles) orelse
-        has_mentioned_role(Rest, MentionRoles).
+has_mentioned_role(_UserRoles, []) ->
+    false;
+has_mentioned_role(UserRoles, MentionRoles) ->
+    MentionSet = mention_role_set(MentionRoles),
+    lists:any(fun(RoleId) -> maps:is_key(RoleId, MentionSet) end, UserRoles).
+
+-spec mention_role_set([binary() | integer()]) -> #{integer() => true}.
+mention_role_set(MentionRoles) when length(MentionRoles) > ?MAX_MENTION_ROLES ->
+    mention_role_set(lists:sublist(MentionRoles, ?MAX_MENTION_ROLES));
+mention_role_set(MentionRoles) ->
+    lists:foldl(fun add_mention_role/2, #{}, MentionRoles).
+
+-spec add_mention_role(term(), #{integer() => true}) -> #{integer() => true}.
+add_mention_role(R, Acc) when is_integer(R), R > 0 ->
+    Acc#{R => true};
+add_mention_role(R, Acc) when is_binary(R) ->
+    case snowflake_id:parse_maybe(R) of
+        Id when is_integer(Id), Id > 0 -> Acc#{Id => true};
+        _ -> Acc
+    end;
+add_mention_role(_, Acc) ->
+    Acc.
 
 -spec get_user_roles_for_guild(user_id(), guild_state()) -> [integer()].
 get_user_roles_for_guild(UserId, GuildState) ->
@@ -179,20 +228,18 @@ get_user_roles_for_guild(UserId, GuildState) ->
 
 -spec extract_role_ids([binary() | integer()]) -> [integer()].
 extract_role_ids(Roles) ->
-    lists:filtermap(
-        fun
-            (Role) when is_binary(Role) ->
-                case validation:validate_snowflake(<<"role">>, Role) of
-                    {ok, RoleId} -> {true, RoleId};
-                    {error, _, _} -> false
-                end;
-            (Role) when is_integer(Role) ->
-                {true, Role};
-            (_) ->
-                false
-        end,
-        Roles
-    ).
+    lists:filtermap(fun parse_role_id/1, Roles).
+
+-spec parse_role_id(term()) -> {true, integer()} | false.
+parse_role_id(Role) when is_binary(Role) ->
+    case validation:validate_snowflake(<<"role">>, Role) of
+        {ok, RoleId} -> {true, RoleId};
+        {error, _, _} -> false
+    end;
+parse_role_id(Role) when is_integer(Role) ->
+    {true, Role};
+parse_role_id(_) ->
+    false.
 
 -spec should_receive_typing(guild_id(), session_data()) -> boolean().
 should_receive_typing(GuildId, SessionData) ->
@@ -203,11 +250,20 @@ should_receive_typing(GuildId, SessionData) ->
             TypingFlag
     end.
 
+-spec should_receive_typing(guild_id(), session_data(), guild_state()) -> boolean().
+should_receive_typing(GuildId, SessionData, State) ->
+    case get_typing_override(GuildId, SessionData) of
+        undefined ->
+            is_effectively_active(GuildId, SessionData, State);
+        TypingFlag ->
+            TypingFlag
+    end.
+
 -spec set_typing_override(guild_id(), boolean(), session_data()) -> session_data().
 set_typing_override(GuildId, TypingFlag, SessionData) ->
     TypingOverrides = maps:get(typing_overrides, SessionData, #{}),
-    NewTypingOverrides = maps:put(GuildId, TypingFlag, TypingOverrides),
-    maps:put(typing_overrides, NewTypingOverrides, SessionData).
+    NewTypingOverrides = TypingOverrides#{GuildId => TypingFlag},
+    SessionData#{typing_overrides => NewTypingOverrides}.
 
 -spec get_typing_override(guild_id(), session_data()) -> boolean() | undefined.
 get_typing_override(GuildId, SessionData) ->
@@ -223,182 +279,10 @@ is_guild_synced(GuildId, SessionData) ->
 mark_guild_synced(GuildId, SessionData) ->
     SyncedGuilds = maps:get(synced_guilds, SessionData, sets:new()),
     NewSyncedGuilds = sets:add_element(GuildId, SyncedGuilds),
-    maps:put(synced_guilds, NewSyncedGuilds, SessionData).
+    SessionData#{synced_guilds => NewSyncedGuilds}.
 
 -spec clear_guild_synced(guild_id(), session_data()) -> session_data().
 clear_guild_synced(GuildId, SessionData) ->
     SyncedGuilds = maps:get(synced_guilds, SessionData, sets:new()),
     NewSyncedGuilds = sets:del_element(GuildId, SyncedGuilds),
-    maps:put(synced_guilds, NewSyncedGuilds, SessionData).
-
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
-
-is_passive_test() ->
-    SessionData = #{active_guilds => sets:from_list([123, 456])},
-    ?assertEqual(false, is_passive(123, SessionData)),
-    ?assertEqual(false, is_passive(456, SessionData)),
-    ?assertEqual(true, is_passive(789, SessionData)),
-    ?assertEqual(true, is_passive(123, #{})),
-    ok.
-
-set_active_test() ->
-    SessionData = #{active_guilds => sets:from_list([123])},
-    NewSessionData = set_active(456, SessionData),
-    ?assertEqual(false, is_passive(456, NewSessionData)),
-    ?assertEqual(false, is_passive(123, NewSessionData)),
-    ok.
-
-set_passive_test() ->
-    SessionData = #{active_guilds => sets:from_list([123, 456])},
-    NewSessionData = set_passive(123, SessionData),
-    ?assertEqual(true, is_passive(123, NewSessionData)),
-    ?assertEqual(false, is_passive(456, NewSessionData)),
-    ok.
-
-should_receive_event_active_session_test() ->
-    SessionData = #{user_id => 1, active_guilds => sets:from_list([123])},
-    State = #{member_count => 100},
-    ?assertEqual(true, should_receive_event(message_create, #{}, 123, SessionData, State)),
-    ?assertEqual(true, should_receive_event(typing_start, #{}, 123, SessionData, State)),
-    ok.
-
-should_receive_event_passive_guild_delete_test() ->
-    SessionData = #{user_id => 1, active_guilds => sets:new()},
-    State = #{member_count => 100},
-    ?assertEqual(true, should_receive_event(guild_delete, #{}, 123, SessionData, State)),
-    ok.
-
-should_receive_event_passive_channel_create_test() ->
-    SessionData = #{user_id => 1, active_guilds => sets:new()},
-    State = #{member_count => 100},
-    ?assertEqual(false, should_receive_event(channel_create, #{}, 123, SessionData, State)),
-    ok.
-
-should_receive_event_passive_channel_delete_test() ->
-    SessionData = #{user_id => 1, active_guilds => sets:new()},
-    State = #{member_count => 100},
-    ?assertEqual(false, should_receive_event(channel_delete, #{}, 123, SessionData, State)),
-    ok.
-
-should_receive_event_passive_passive_updates_test() ->
-    SessionData = #{user_id => 1, active_guilds => sets:new()},
-    State = #{member_count => 100},
-    ?assertEqual(true, should_receive_event(passive_updates, #{}, 123, SessionData, State)),
-    ok.
-
-should_receive_event_passive_message_not_mentioned_test() ->
-    SessionData = #{user_id => 1, active_guilds => sets:new(), user_roles => []},
-    EventData = #{<<"mentions">> => [], <<"mention_roles">> => [], <<"mention_everyone">> => false},
-    State = #{member_count => 300},
-    ?assertEqual(false, should_receive_event(message_create, EventData, 123, SessionData, State)),
-    ok.
-
-should_receive_event_passive_message_user_mentioned_test() ->
-    SessionData = #{user_id => 1, active_guilds => sets:new(), user_roles => []},
-    EventData = #{
-        <<"mentions">> => [#{<<"id">> => <<"1">>}],
-        <<"mention_roles">> => [],
-        <<"mention_everyone">> => false
-    },
-    State = #{member_count => 300},
-    ?assertEqual(true, should_receive_event(message_create, EventData, 123, SessionData, State)),
-    ok.
-
-should_receive_event_passive_message_mention_everyone_test() ->
-    SessionData = #{user_id => 1, active_guilds => sets:new(), user_roles => []},
-    EventData = #{<<"mentions">> => [], <<"mention_roles">> => [], <<"mention_everyone">> => true},
-    State = #{member_count => 300},
-    ?assertEqual(true, should_receive_event(message_create, EventData, 123, SessionData, State)),
-    ok.
-
-should_receive_event_passive_message_role_mentioned_test() ->
-    SessionData = #{user_id => 1, active_guilds => sets:new(), user_roles => [100]},
-    EventData = #{
-        <<"mentions">> => [], <<"mention_roles">> => [<<"100">>], <<"mention_everyone">> => false
-    },
-    State = #{member_count => 300},
-    ?assertEqual(true, should_receive_event(message_create, EventData, 123, SessionData, State)),
-    ok.
-
-should_receive_event_passive_other_event_test() ->
-    SessionData = #{user_id => 1, active_guilds => sets:new()},
-    State = #{member_count => 300},
-    ?assertEqual(false, should_receive_event(typing_start, #{}, 123, SessionData, State)),
-    ?assertEqual(false, should_receive_event(message_update, #{}, 123, SessionData, State)),
-    ok.
-
-should_receive_event_small_guild_all_sessions_receive_messages_test() ->
-    SessionData = #{user_id => 1, active_guilds => sets:new()},
-    State = #{member_count => 100},
-    ?assertEqual(true, should_receive_event(message_create, #{}, 123, SessionData, State)),
-    ?assertEqual(true, should_receive_event(message_update, #{}, 123, SessionData, State)),
-    ?assertEqual(true, should_receive_event(message_delete, #{}, 123, SessionData, State)),
-    ok.
-
-should_receive_event_small_guild_voice_state_test() ->
-    SessionData = #{user_id => 1, active_guilds => sets:new()},
-    State = #{member_count => 100},
-    EventData = #{<<"user_id">> => <<"2">>},
-    ?assertEqual(
-        true, should_receive_event(voice_state_update, EventData, 123, SessionData, State)
-    ),
-    ok.
-
-should_receive_event_passive_voice_state_blocked_test() ->
-    SessionData = #{user_id => 1, active_guilds => sets:new()},
-    State = #{member_count => 300},
-    EventData = #{<<"user_id">> => <<"2">>},
-    ?assertEqual(
-        false, should_receive_event(voice_state_update, EventData, 123, SessionData, State)
-    ),
-    ok.
-
-is_passive_bot_always_active_test() ->
-    BotSessionData = #{user_id => 1, active_guilds => sets:new(), bot => true},
-    ?assertEqual(false, is_passive(123, BotSessionData)),
-    ?assertEqual(false, is_passive(456, BotSessionData)),
-    ?assertEqual(false, is_passive(789, BotSessionData)),
-    ok.
-
-should_receive_event_bot_always_receives_test() ->
-    BotSessionData = #{user_id => 1, active_guilds => sets:new(), bot => true},
-    State = #{member_count => 300},
-    ?assertEqual(true, should_receive_event(message_create, #{}, 123, BotSessionData, State)),
-    ?assertEqual(true, should_receive_event(typing_start, #{}, 123, BotSessionData, State)),
-    ?assertEqual(true, should_receive_event(message_update, #{}, 123, BotSessionData, State)),
-    ?assertEqual(true, should_receive_event(guild_delete, #{}, 123, BotSessionData, State)),
-    ok.
-
-is_small_guild_test() ->
-    ?assertEqual(true, is_small_guild(#{member_count => 100})),
-    ?assertEqual(true, is_small_guild(#{member_count => 250})),
-    ?assertEqual(false, is_small_guild(#{member_count => 251})),
-    ?assertEqual(false, is_small_guild(#{member_count => 1000})),
-    ?assertEqual(false, is_small_guild(#{})),
-    ok.
-
-is_message_event_test() ->
-    ?assertEqual(true, is_message_event(message_create)),
-    ?assertEqual(true, is_message_event(message_update)),
-    ?assertEqual(true, is_message_event(message_delete)),
-    ?assertEqual(true, is_message_event(message_delete_bulk)),
-    ?assertEqual(false, is_message_event(typing_start)),
-    ?assertEqual(false, is_message_event(guild_create)),
-    ok.
-
-is_lazy_guild_event_test() ->
-    ?assertEqual(true, is_lazy_guild_event(message_create)),
-    ?assertEqual(true, is_lazy_guild_event(voice_state_update)),
-    ?assertEqual(false, is_lazy_guild_event(typing_start)),
-    ?assertEqual(false, is_lazy_guild_event(channel_create)),
-    ok.
-
-extract_role_ids_test() ->
-    ?assertEqual([123], extract_role_ids([<<"123">>])),
-    ?assertEqual([456], extract_role_ids([456])),
-    ?assertEqual([123, 456], extract_role_ids([<<"123">>, 456])),
-    ?assertEqual([], extract_role_ids([<<"invalid">>])),
-    ok.
-
--endif.
+    SessionData#{synced_guilds => NewSyncedGuilds}.

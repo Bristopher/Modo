@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(presence_status).
+-typing([eqwalizer]).
 
 -export([
     get_current_status/1,
@@ -23,6 +9,8 @@
     get_flattened_afk/1,
     collect_sessions_for_replace/1
 ]).
+
+-export_type([status/0, sessions/0]).
 
 -type session_id() :: binary().
 -type status() :: online | offline | idle | dnd | invisible.
@@ -36,23 +24,28 @@ get_current_status(Sessions) ->
         true ->
             invisible;
         false ->
-            StatusPrecedence = [online, dnd, idle],
-            lists:foldl(
-                fun(Status, Acc) ->
-                    case Acc of
-                        offline ->
-                            case lists:member(Status, AllStatuses) of
-                                true -> Status;
-                                false -> Acc
-                            end;
-                        _ ->
-                            Acc
-                    end
-                end,
-                offline,
-                StatusPrecedence
-            )
+            resolve_status_precedence(AllStatuses)
     end.
+
+-spec resolve_status_precedence([status()]) -> status().
+resolve_status_precedence(AllStatuses) ->
+    StatusPrecedence = [dnd, online, idle],
+    lists:foldl(
+        fun(Status, Acc) ->
+            promote_status(Status, Acc, AllStatuses)
+        end,
+        offline,
+        StatusPrecedence
+    ).
+
+-spec promote_status(status(), status(), [status()]) -> status().
+promote_status(Status, offline, AllStatuses) ->
+    case lists:member(Status, AllStatuses) of
+        true -> Status;
+        false -> offline
+    end;
+promote_status(_Status, Acc, _AllStatuses) ->
+    Acc.
 
 -spec get_flattened_mobile(sessions()) -> boolean().
 get_flattened_mobile(Sessions) ->
@@ -65,28 +58,22 @@ get_flattened_mobile(Sessions) ->
 
 -spec get_flattened_afk(sessions()) -> boolean().
 get_flattened_afk(Sessions) ->
-    HasMobile = lists:any(
-        fun(Session) ->
-            maps:get(mobile, Session, false)
-        end,
-        maps:values(Sessions)
-    ),
+    HasMobile = get_flattened_mobile(Sessions),
     case HasMobile of
-        true ->
-            false;
-        false ->
-            case maps:size(Sessions) of
-                0 ->
-                    false;
-                _ ->
-                    lists:all(
-                        fun(Session) ->
-                            maps:get(afk, Session, false)
-                        end,
-                        maps:values(Sessions)
-                    )
-            end
+        true -> false;
+        false -> all_sessions_afk(Sessions)
     end.
+
+-spec all_sessions_afk(sessions()) -> boolean().
+all_sessions_afk(Sessions) ->
+    case maps:size(Sessions) of
+        0 -> false;
+        _ -> lists:all(fun is_session_afk/1, maps:values(Sessions))
+    end.
+
+-spec is_session_afk(map()) -> boolean().
+is_session_afk(Session) ->
+    maps:get(afk, Session, false).
 
 -spec collect_sessions_for_replace(sessions()) -> [map()].
 collect_sessions_for_replace(Sessions) ->
@@ -101,16 +88,20 @@ collect_sessions_for_replace(Sessions) ->
             <<"afk">> => Afk
         }
     ],
-    SessionEntries = lists:map(
-        fun({SessionId, Session}) ->
-            #{
-                <<"session_id">> => SessionId,
-                <<"status">> => constants:status_type_atom(maps:get(status, Session)),
-                <<"afk">> => maps:get(afk, Session, false),
-                <<"mobile">> => maps:get(mobile, Session, false)
-            }
+    SessionEntries = maps:fold(
+        fun(SessionId, Session, Acc) ->
+            [
+                #{
+                    <<"session_id">> => SessionId,
+                    <<"status">> => constants:status_type_atom(maps:get(status, Session)),
+                    <<"afk">> => maps:get(afk, Session, false),
+                    <<"mobile">> => maps:get(mobile, Session, false)
+                }
+                | Acc
+            ]
         end,
-        maps:to_list(Sessions)
+        [],
+        Sessions
     ),
     BaseSessions ++ SessionEntries.
 
@@ -124,12 +115,33 @@ get_current_status_online_test() ->
     Sessions = #{<<"s1">> => #{status => online, afk => false, mobile => false}},
     ?assertEqual(online, get_current_status(Sessions)).
 
-get_current_status_precedence_test() ->
+get_current_status_online_over_idle_test() ->
     Sessions = #{
         <<"s1">> => #{status => idle, afk => false, mobile => false},
         <<"s2">> => #{status => online, afk => false, mobile => false}
     },
     ?assertEqual(online, get_current_status(Sessions)).
+
+get_current_status_online_over_afk_idle_test() ->
+    Sessions = #{
+        <<"s1">> => #{status => idle, afk => true, mobile => false},
+        <<"s2">> => #{status => online, afk => false, mobile => false}
+    },
+    ?assertEqual(online, get_current_status(Sessions)).
+
+get_current_status_all_idle_test() ->
+    Sessions = #{
+        <<"s1">> => #{status => idle, afk => true, mobile => false},
+        <<"s2">> => #{status => idle, afk => true, mobile => false}
+    },
+    ?assertEqual(idle, get_current_status(Sessions)).
+
+get_current_status_dnd_over_online_test() ->
+    Sessions = #{
+        <<"s1">> => #{status => dnd, afk => false, mobile => false},
+        <<"s2">> => #{status => online, afk => false, mobile => false}
+    },
+    ?assertEqual(dnd, get_current_status(Sessions)).
 
 get_current_status_dnd_over_idle_test() ->
     Sessions = #{

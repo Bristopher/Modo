@@ -1,78 +1,144 @@
-ARG BUILD_SHA
-ARG BUILD_NUMBER
-ARG BUILD_TIMESTAMP
-ARG RELEASE_CHANNEL=nightly
+# SPDX-License-Identifier: AGPL-3.0-or-later
 
-FROM node:24-bookworm-slim AS base
+ARG BUILD_VERSION=""
+ARG PUBLIC_ASSET_BASE_URL=""
+ARG FLUXER_APP_PROXY_TIME_FREEZE_ENABLED="true"
+
+# ---------- Stage 1: Build the SPA (fluxer_app) ----------
+FROM node:24-bookworm-slim AS app-build
+
+ARG BUILD_VERSION
+ARG PUBLIC_ASSET_BASE_URL
 
 WORKDIR /usr/src/app
 
-RUN corepack enable && corepack prepare pnpm@10.26.0 --activate
-
-FROM base AS generator
-
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY patches/ ./patches/
-COPY packages/config/ ./packages/config/
-COPY packages/constants/ ./packages/constants/
-
-RUN pnpm install --frozen-lockfile --filter @fluxer/config...
-RUN pnpm --filter @fluxer/config generate
-
-FROM base AS deps
-
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY patches/ ./patches/
-COPY packages/ ./packages/
-COPY fluxer_app_proxy/package.json ./fluxer_app_proxy/
-
-RUN pnpm install --frozen-lockfile --prod
-
-FROM node:24-bookworm-slim
-
-ARG BUILD_SHA
-ARG BUILD_NUMBER
-ARG BUILD_TIMESTAMP
-ARG RELEASE_CHANNEL
-
-WORKDIR /usr/src/app/fluxer_app_proxy
+RUN corepack enable && corepack prepare pnpm@10.29.3 --activate
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-	ca-certificates \
-	curl && \
-	rm -rf /var/lib/apt/lists/*
+	curl ca-certificates build-essential clang \
+	&& rm -rf /var/lib/apt/lists/*
 
-RUN corepack enable && corepack prepare pnpm@10.26.0 --activate
+ARG RUST_VERSION=1.93.0
+ENV RUSTUP_HOME=/usr/local/rustup \
+	CARGO_HOME=/usr/local/cargo \
+	PATH=/usr/local/cargo/bin:$PATH
+RUN set -eux; \
+	curl --retry 3 --retry-all-errors --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+		| sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
+			--target wasm32-unknown-unknown; \
+	rustc --version; cargo --version
 
-COPY --from=deps /usr/src/app/node_modules /usr/src/app/node_modules
-COPY --from=deps /usr/src/app/fluxer_app_proxy/node_modules ./node_modules
-COPY --from=deps /usr/src/app/packages /usr/src/app/packages
-COPY --from=generator /usr/src/app/packages/config/src/ConfigSchema.json /usr/src/app/packages/config/src/ConfigSchema.json
-COPY --from=generator /usr/src/app/packages/config/src/MasterZodSchema.generated.tsx /usr/src/app/packages/config/src/MasterZodSchema.generated.tsx
-COPY tsconfigs /usr/src/app/tsconfigs
-COPY fluxer_app_proxy/package.json ./
-COPY fluxer_app_proxy/tsconfig.json ./
-COPY fluxer_app_proxy/src ./src
 
-COPY fluxer_app/dist/ ./assets/
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches/ ./patches/
+COPY fluxer_app/package.json ./fluxer_app/
+COPY packages/constants/package.json ./packages/constants/
+COPY packages/date_utils/package.json ./packages/date_utils/
+COPY packages/geo_utils/package.json ./packages/geo_utils/
+COPY packages/instance_bootstrap/package.json ./packages/instance_bootstrap/
+COPY packages/limits/package.json ./packages/limits/
+COPY packages/schema/package.json ./packages/schema/
+COPY packages/snowflake/package.json ./packages/snowflake/
+COPY packages/voice_engine_v2/package.json ./packages/voice_engine_v2/
+COPY fluxer_app/pkgs/list_utils/package.json ./fluxer_app/pkgs/list_utils/
+COPY fluxer_app/pkgs/number_utils/package.json ./fluxer_app/pkgs/number_utils/
+COPY fluxer_app/pkgs/livekit-client/package.json ./fluxer_app/pkgs/livekit-client/
 
-RUN mkdir -p /usr/src/app/.cache/corepack && \
-	chown -R nobody:nogroup /usr/src/app
+RUN pnpm install --frozen-lockfile --filter fluxer_app...
 
-ENV HOME=/usr/src/app
-ENV COREPACK_HOME=/usr/src/app/.cache/corepack
-ENV NODE_ENV=production
-ENV PORT=8080
-ENV BUILD_SHA=${BUILD_SHA}
-ENV BUILD_NUMBER=${BUILD_NUMBER}
-ENV BUILD_TIMESTAMP=${BUILD_TIMESTAMP}
-ENV RELEASE_CHANNEL=${RELEASE_CHANNEL}
+COPY tsconfigs ./tsconfigs
+COPY packages/constants/ ./packages/constants/
+COPY packages/date_utils/ ./packages/date_utils/
+COPY packages/geo_utils/ ./packages/geo_utils/
+COPY packages/instance_bootstrap/ ./packages/instance_bootstrap/
+COPY packages/limits/ ./packages/limits/
+COPY packages/schema/ ./packages/schema/
+COPY packages/snowflake/ ./packages/snowflake/
+COPY packages/voice_engine_v2/ ./packages/voice_engine_v2/
+COPY packages/markdown_parser/rust/Cargo.toml ./packages/markdown_parser/rust/
+COPY packages/markdown_parser/rust/.cargo/ ./packages/markdown_parser/rust/.cargo/
+COPY packages/markdown_parser/rust/benches/parser.rs ./packages/markdown_parser/rust/benches/
+COPY packages/markdown_parser/rust/src/ ./packages/markdown_parser/rust/src/
+COPY tools/ci/ ./tools/ci/
+COPY fluxer_app/index.html fluxer_app/lingui.config.js fluxer_app/package.json fluxer_app/postcss.config.js fluxer_app/rspack.config.mjs fluxer_app/tsconfig.base.json fluxer_app/tsconfig.json ./fluxer_app/
+COPY fluxer_app/pkgs/list_utils/ ./fluxer_app/pkgs/list_utils/
+COPY fluxer_app/pkgs/number_utils/ ./fluxer_app/pkgs/number_utils/
+COPY fluxer_app/pkgs/livekit-client/ ./fluxer_app/pkgs/livekit-client/
+COPY fluxer_app/rust/ ./fluxer_app/rust/
+COPY fluxer_app/scripts/ ./fluxer_app/scripts/
+COPY fluxer_app/src/ ./fluxer_app/src/
 
-USER nobody
+ENV BUILD_VERSION=${BUILD_VERSION} \
+	PUBLIC_ASSET_BASE_URL=${PUBLIC_ASSET_BASE_URL}
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+	--mount=type=cache,target=/usr/local/cargo/git \
+	cd fluxer_app && pnpm build
+
+# Extract the full SPA asset tree for local serving by the app proxy.
+FROM alpine:3.21 AS app-assets
+COPY --from=app-build /usr/src/app/fluxer_app/dist /assets
+
+# Stage for CI to extract the full dist (docker bake app-dist target)
+FROM alpine:3.21 AS app-dist
+COPY --from=app-build /usr/src/app/fluxer_app/dist /dist
+
+# ---------- Stage 2: Build the Rust proxy binary ----------
+FROM rust:1-bookworm AS rust-builder
+
+ARG FLUXER_APP_PROXY_TIME_FREEZE_ENABLED="true"
+
+WORKDIR /usr/src/app
+
+COPY Cargo.lock ./
+COPY fluxer_common/ fluxer_common/
+COPY fluxer_app_proxy/ fluxer_app_proxy/
+COPY fluxer_svc/ fluxer_svc/
+
+RUN printf '%s\n' \
+	'[workspace]' \
+	'members = [' \
+	'    "fluxer_app_proxy",' \
+	'    "fluxer_common",' \
+	'    "fluxer_svc",' \
+	']' \
+	'resolver = "2"' \
+	'' \
+	'[workspace.package]' \
+	'edition = "2024"' \
+	'license = "AGPL-3.0-or-later"' \
+	> Cargo.toml
+
+RUN if [ "${FLUXER_APP_PROXY_TIME_FREEZE_ENABLED}" = "false" ]; then \
+		cargo build --release -p fluxer_app_proxy --no-default-features; \
+	else \
+		cargo build --release -p fluxer_app_proxy; \
+	fi \
+	&& cp target/release/fluxer_app_proxy /usr/local/bin/fluxer-app-proxy
+
+# ---------- Stage 3: Runtime ----------
+FROM debian:bookworm-slim
+
+ARG BUILD_VERSION=""
+
+WORKDIR /srv/app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+	ca-certificates curl \
+	&& rm -rf /var/lib/apt/lists/*
+
+COPY --from=rust-builder /usr/local/bin/fluxer-app-proxy /usr/local/bin/fluxer-app-proxy
+COPY --from=app-assets /assets ./static/
+
+ENV BUILD_VERSION="${BUILD_VERSION}"
+ENV FLUXER_APP_PROXY_HOST="0.0.0.0"
+ENV FLUXER_APP_PROXY_PORT="8080"
+
+USER 65532:65532
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 	CMD curl -f http://localhost:8080/_health || exit 1
 
-CMD ["pnpm", "start"]
+CMD ["/usr/local/bin/fluxer-app-proxy"]

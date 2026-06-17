@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(constants).
+-typing([eqwalizer]).
 
 -export([
     gateway_opcode/1,
@@ -26,8 +12,10 @@
     max_payload_size/0,
     heartbeat_interval/0,
     heartbeat_timeout/0,
+    resume_timeout/0,
     random_session_bytes/0,
     view_channel_permission/0,
+    view_audit_log_permission/0,
     administrator_permission/0,
     manage_roles_permission/0,
     manage_channels_permission/0,
@@ -37,7 +25,9 @@
     use_vad_permission/0,
     read_message_history_permission/0,
     kick_members_permission/0,
-    ban_members_permission/0
+    ban_members_permission/0,
+    view_channel_members_permission/0,
+    voice_channel_camera_user_limit/0
 ]).
 
 -spec gateway_opcode(integer()) -> atom().
@@ -55,6 +45,8 @@ gateway_opcode(10) -> hello;
 gateway_opcode(11) -> heartbeat_ack;
 gateway_opcode(12) -> gateway_error;
 gateway_opcode(14) -> lazy_request;
+gateway_opcode(15) -> request_guild_counts;
+gateway_opcode(16) -> request_channel_member_counts;
 gateway_opcode(_) -> unknown.
 
 -spec opcode_to_num(atom()) -> integer().
@@ -71,7 +63,9 @@ opcode_to_num(invalid_session) -> 9;
 opcode_to_num(hello) -> 10;
 opcode_to_num(heartbeat_ack) -> 11;
 opcode_to_num(gateway_error) -> 12;
-opcode_to_num(lazy_request) -> 14.
+opcode_to_num(lazy_request) -> 14;
+opcode_to_num(request_guild_counts) -> 15;
+opcode_to_num(request_channel_member_counts) -> 16.
 
 -spec close_code_to_num(atom()) -> integer().
 close_code_to_num(unknown_error) -> 4000;
@@ -95,11 +89,14 @@ dispatch_event_atom(EventBinary) when is_binary(EventBinary) ->
     event_atoms:normalize(EventBinary).
 
 -spec status_type_atom(binary() | atom()) -> atom() | binary().
+status_type_atom(<<>>) -> online;
 status_type_atom(<<"online">>) -> online;
 status_type_atom(<<"dnd">>) -> dnd;
 status_type_atom(<<"idle">>) -> idle;
 status_type_atom(<<"invisible">>) -> invisible;
 status_type_atom(<<"offline">>) -> offline;
+status_type_atom(undefined) -> <<"online">>;
+status_type_atom(null) -> <<"online">>;
 status_type_atom(online) -> <<"online">>;
 status_type_atom(dnd) -> <<"dnd">>;
 status_type_atom(idle) -> <<"idle">>;
@@ -115,11 +112,17 @@ heartbeat_interval() -> 41250.
 -spec heartbeat_timeout() -> pos_integer().
 heartbeat_timeout() -> 45000.
 
+-spec resume_timeout() -> pos_integer().
+resume_timeout() -> 60000.
+
 -spec random_session_bytes() -> pos_integer().
 random_session_bytes() -> 16.
 
 -spec view_channel_permission() -> pos_integer().
 view_channel_permission() -> 1024.
+
+-spec view_audit_log_permission() -> pos_integer().
+view_audit_log_permission() -> 128.
 
 -spec administrator_permission() -> pos_integer().
 administrator_permission() -> 8.
@@ -151,6 +154,12 @@ kick_members_permission() -> 2.
 -spec ban_members_permission() -> pos_integer().
 ban_members_permission() -> 4.
 
+-spec view_channel_members_permission() -> pos_integer().
+view_channel_members_permission() -> 18014398509481984.
+
+-spec voice_channel_camera_user_limit() -> pos_integer().
+voice_channel_camera_user_limit() -> 25.
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
@@ -172,6 +181,7 @@ close_code_to_num_test() ->
     ?assertEqual(4013, close_code_to_num(ack_backpressure)).
 
 status_type_atom_binary_to_atom_test() ->
+    ?assertEqual(online, status_type_atom(<<>>)),
     ?assertEqual(online, status_type_atom(<<"online">>)),
     ?assertEqual(dnd, status_type_atom(<<"dnd">>)),
     ?assertEqual(idle, status_type_atom(<<"idle">>)),
@@ -179,6 +189,8 @@ status_type_atom_binary_to_atom_test() ->
     ?assertEqual(offline, status_type_atom(<<"offline">>)).
 
 status_type_atom_atom_to_binary_test() ->
+    ?assertEqual(<<"online">>, status_type_atom(undefined)),
+    ?assertEqual(<<"online">>, status_type_atom(null)),
     ?assertEqual(<<"online">>, status_type_atom(online)),
     ?assertEqual(<<"dnd">>, status_type_atom(dnd)),
     ?assertEqual(<<"idle">>, status_type_atom(idle)).
@@ -187,8 +199,10 @@ constants_values_test() ->
     ?assertEqual(4096, max_payload_size()),
     ?assertEqual(41250, heartbeat_interval()),
     ?assertEqual(45000, heartbeat_timeout()),
+    ?assertEqual(60000, resume_timeout()),
     ?assertEqual(16, random_session_bytes()),
     ?assertEqual(1024, view_channel_permission()),
+    ?assertEqual(128, view_audit_log_permission()),
     ?assertEqual(8, administrator_permission()).
 
 -endif.

@@ -1,0 +1,242 @@
+%% SPDX-License-Identifier: AGPL-3.0-or-later
+
+-module(limited_deque).
+-typing([eqwalizer]).
+-compile({no_auto_import, [size/1]}).
+
+-export([
+    new/2,
+    push/2,
+    push_front/2,
+    pop/1,
+    pop_front/1,
+    to_list/1,
+    from_list/3,
+    size/1,
+    bytes/1,
+    is_empty/1,
+    filter/2,
+    drop_while_front/2,
+    recompute_bytes/2
+]).
+
+-export_type([deque/0]).
+
+-opaque deque() :: #{
+    front := [term()],
+    rear := [term()],
+    count := non_neg_integer(),
+    max_count := pos_integer(),
+    bytes := non_neg_integer(),
+    max_bytes := non_neg_integer()
+}.
+
+-spec new(pos_integer(), non_neg_integer()) -> deque().
+new(MaxCount, MaxBytes) ->
+    #{
+        front => [],
+        rear => [],
+        count => 0,
+        max_count => MaxCount,
+        bytes => 0,
+        max_bytes => MaxBytes
+    }.
+
+-spec push(term(), deque()) -> deque().
+push(Item, #{rear := Rear, count := Count, bytes := Bytes} = D) ->
+    ItemBytes = entry_bytes(Item),
+    D1 = D#{rear := [Item | Rear], count := Count + 1, bytes := Bytes + ItemBytes},
+    trim_front(D1).
+
+-spec push_front(term(), deque()) -> deque().
+push_front(Item, #{front := Front, count := Count, bytes := Bytes} = D) ->
+    ItemBytes = entry_bytes(Item),
+    D1 = D#{front := [Item | Front], count := Count + 1, bytes := Bytes + ItemBytes},
+    trim_rear(D1).
+
+-spec pop(deque()) -> {term(), deque()} | empty.
+pop(#{rear := [H | T], count := Count, bytes := Bytes} = D) ->
+    {H, D#{rear := T, count := Count - 1, bytes := max(0, Bytes - entry_bytes(H))}};
+pop(#{rear := [], front := []}) ->
+    empty;
+pop(#{rear := [], front := Front, count := Count, bytes := Bytes} = D) ->
+    [H | T] = lists:reverse(Front),
+    {H, D#{
+        front := [],
+        rear := T,
+        count := Count - 1,
+        bytes := max(0, Bytes - entry_bytes(H))
+    }}.
+
+-spec pop_front(deque()) -> {term(), deque()} | empty.
+pop_front(#{front := [H | T], count := Count, bytes := Bytes} = D) ->
+    {H, D#{front := T, count := Count - 1, bytes := max(0, Bytes - entry_bytes(H))}};
+pop_front(#{front := [], rear := []}) ->
+    empty;
+pop_front(#{front := [], rear := Rear, count := Count, bytes := Bytes} = D) ->
+    [H | T] = lists:reverse(Rear),
+    {H, D#{
+        rear := [],
+        front := T,
+        count := Count - 1,
+        bytes := max(0, Bytes - entry_bytes(H))
+    }}.
+
+-spec to_list(deque()) -> [term()].
+to_list(#{front := Front, rear := Rear}) ->
+    Front ++ lists:reverse(Rear).
+
+-spec from_list([term()], pos_integer(), non_neg_integer()) -> deque().
+from_list(List, MaxCount, MaxBytes) ->
+    TotalBytes = lists:foldl(fun(I, Acc) -> Acc + entry_bytes(I) end, 0, List),
+    D = #{
+        front => List,
+        rear => [],
+        count => length(List),
+        max_count => MaxCount,
+        bytes => TotalBytes,
+        max_bytes => MaxBytes
+    },
+    trim_front(D).
+
+-spec size(deque()) -> non_neg_integer().
+size(#{count := Count}) -> Count.
+
+-spec bytes(deque()) -> non_neg_integer().
+bytes(#{bytes := Bytes}) -> Bytes.
+
+-spec is_empty(deque()) -> boolean().
+is_empty(#{count := 0}) -> true;
+is_empty(_) -> false.
+
+-spec filter(fun((term()) -> boolean()), deque()) -> deque().
+filter(Pred, #{max_count := MC, max_bytes := MB} = D) ->
+    List = to_list(D),
+    from_list(lists:filter(Pred, List), MC, MB).
+
+-spec drop_while_front(fun((term()) -> boolean()), deque()) -> deque().
+drop_while_front(Pred, D) ->
+    case pop_front(D) of
+        empty ->
+            D;
+        {Item, D2} ->
+            continue_drop_while_front(Pred(Item), Pred, Item, D2)
+    end.
+
+-spec continue_drop_while_front(boolean(), fun((term()) -> boolean()), term(), deque()) ->
+    deque().
+continue_drop_while_front(true, Pred, _Item, D) ->
+    drop_while_front(Pred, D);
+continue_drop_while_front(false, _Pred, Item, D) ->
+    push_front(Item, D).
+
+-spec recompute_bytes(fun((term()) -> non_neg_integer()), deque()) -> deque().
+recompute_bytes(ByteFun, #{front := Front, rear := Rear} = D) ->
+    FrontBytes = lists:foldl(fun(I, Acc) -> Acc + ByteFun(I) end, 0, Front),
+    RearBytes = lists:foldl(fun(I, Acc) -> Acc + ByteFun(I) end, 0, Rear),
+    D#{bytes := FrontBytes + RearBytes}.
+
+-spec trim_front(deque()) -> deque().
+trim_front(
+    #{count := Count, max_count := MaxCount, max_bytes := MaxBytes} = D
+) when
+    Count =< MaxCount, MaxBytes =:= 0
+->
+    D;
+trim_front(
+    #{count := Count, max_count := MaxCount, bytes := Bytes, max_bytes := MaxBytes} = D
+) when
+    Count =< MaxCount, Bytes =< MaxBytes
+->
+    D;
+trim_front(D) ->
+    case pop_front(D) of
+        empty -> D;
+        {_, D2} -> trim_front(D2)
+    end.
+
+-spec trim_rear(deque()) -> deque().
+trim_rear(
+    #{count := Count, max_count := MaxCount, max_bytes := MaxBytes} = D
+) when
+    Count =< MaxCount, MaxBytes =:= 0
+->
+    D;
+trim_rear(
+    #{count := Count, max_count := MaxCount, bytes := Bytes, max_bytes := MaxBytes} = D
+) when
+    Count =< MaxCount, Bytes =< MaxBytes
+->
+    D;
+trim_rear(D) ->
+    case pop(D) of
+        empty -> D;
+        {_, D2} -> trim_rear(D2)
+    end.
+
+-spec entry_bytes(term()) -> non_neg_integer().
+entry_bytes(Term) ->
+    erts_debug:flat_size(Term) * erlang:system_info(wordsize).
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+new_empty_test() ->
+    D = new(10, 0),
+    ?assertEqual(0, size(D)),
+    ?assertEqual(true, is_empty(D)),
+    ?assertEqual([], to_list(D)).
+
+push_and_to_list_test() ->
+    D0 = new(10, 0),
+    D1 = push(a, push(b, push(c, D0))),
+    ?assertEqual([c, b, a], to_list(D1)),
+    ?assertEqual(3, size(D1)).
+
+push_trims_at_bound_test() ->
+    D0 = new(3, 0),
+    D1 = push(d, push(c, push(b, push(a, D0)))),
+    ?assertEqual(3, size(D1)),
+    List = to_list(D1),
+    ?assertEqual([b, c, d], List).
+
+pop_front_test() ->
+    assert_pop_sequence(fun pop_front/1, [1, 2, 3]).
+
+pop_rear_test() ->
+    assert_pop_sequence(fun pop/1, [3, 2, 1]).
+
+assert_pop_sequence(PopFun, Items) ->
+    D1 = lists:foldl(
+        fun(Expected, D) ->
+            {Expected, NextD} = PopFun(D),
+            NextD
+        end,
+        from_list([1, 2, 3], 10, 0),
+        Items
+    ),
+    ?assertEqual(empty, PopFun(D1)).
+
+filter_test() ->
+    D0 = default_test_deque(),
+    D1 = filter(fun(X) -> X > 3 end, D0),
+    ?assertEqual([4, 5], to_list(D1)),
+    ?assertEqual(2, size(D1)).
+
+from_list_trims_test() ->
+    D = bounded_test_deque(3),
+    ?assertEqual(3, size(D)),
+    ?assertEqual([3, 4, 5], to_list(D)).
+
+default_test_deque() ->
+    bounded_test_deque(10).
+
+bounded_test_deque(MaxCount) ->
+    from_list([1, 2, 3, 4, 5], MaxCount, 0).
+
+size_is_o1_test() ->
+    D0 = new(1000, 0),
+    D1 = lists:foldl(fun push/2, D0, lists:seq(1, 1000)),
+    ?assertEqual(1000, size(D1)).
+
+-endif.

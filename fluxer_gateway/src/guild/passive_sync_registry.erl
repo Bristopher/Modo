@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(passive_sync_registry).
+-typing([eqwalizer]).
 
 -export([
     init/0,
@@ -29,10 +15,12 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--define(TABLE, passive_sync_registry).
-
 -type session_id() :: binary().
 -type guild_id() :: integer().
+-export_type([session_id/0, guild_id/0, passive_state/0]).
+
+-define(TABLE, passive_sync_registry).
+
 -type passive_state() :: #{
     previous_passive_updates := #{binary() => binary()},
     previous_passive_channel_versions := #{binary() => integer()},
@@ -59,7 +47,7 @@ init() ->
 store(SessionId, GuildId, PassiveState) ->
     ensure_table(),
     Key = {SessionId, GuildId},
-    ets:insert(?TABLE, {Key, PassiveState, SessionId}),
+    ets:insert(?TABLE, {Key, PassiveState}),
     ok.
 
 -spec lookup(session_id(), guild_id()) -> passive_state().
@@ -67,7 +55,7 @@ lookup(SessionId, GuildId) ->
     ensure_table(),
     Key = {SessionId, GuildId},
     case ets:lookup(?TABLE, Key) of
-        [{Key, PassiveState, _SessionId}] ->
+        [{Key, PassiveState}] ->
             PassiveState;
         [] ->
             #{
@@ -87,7 +75,7 @@ delete(SessionId, GuildId) ->
 -spec delete_all_for_session(session_id()) -> ok.
 delete_all_for_session(SessionId) ->
     ensure_table(),
-    ets:match_delete(?TABLE, {'_', '_', SessionId}),
+    ets:match_delete(?TABLE, {{SessionId, '_'}, '_'}),
     ok.
 
 -spec ensure_table() -> ok.
@@ -131,11 +119,14 @@ lookup_missing_returns_defaults_test() ->
     cleanup_table(),
     ok = init(),
     Result = lookup(<<"nonexistent">>, 999),
-    ?assertEqual(#{
-        previous_passive_updates => #{},
-        previous_passive_channel_versions => #{},
-        previous_passive_voice_states => #{}
-    }, Result),
+    ?assertEqual(
+        #{
+            previous_passive_updates => #{},
+            previous_passive_channel_versions => #{},
+            previous_passive_voice_states => #{}
+        },
+        Result
+    ),
     cleanup_table().
 
 delete_removes_entry_test() ->
@@ -151,11 +142,14 @@ delete_removes_entry_test() ->
     ok = store(SessionId, GuildId, PassiveState),
     ok = delete(SessionId, GuildId),
     Result = lookup(SessionId, GuildId),
-    ?assertEqual(#{
-        previous_passive_updates => #{},
-        previous_passive_channel_versions => #{},
-        previous_passive_voice_states => #{}
-    }, Result),
+    ?assertEqual(
+        #{
+            previous_passive_updates => #{},
+            previous_passive_channel_versions => #{},
+            previous_passive_voice_states => #{}
+        },
+        Result
+    ),
     cleanup_table().
 
 delete_all_for_session_removes_all_guilds_test() ->
@@ -163,37 +157,32 @@ delete_all_for_session_removes_all_guilds_test() ->
     ok = init(),
     SessionId = <<"session_1">>,
     OtherSessionId = <<"session_2">>,
-    State1 = #{
-        previous_passive_updates => #{<<"ch1">> => <<"msg1">>},
-        previous_passive_channel_versions => #{},
-        previous_passive_voice_states => #{}
-    },
-    State2 = #{
-        previous_passive_updates => #{<<"ch2">> => <<"msg2">>},
-        previous_passive_channel_versions => #{},
-        previous_passive_voice_states => #{}
-    },
-    OtherState = #{
-        previous_passive_updates => #{<<"ch3">> => <<"msg3">>},
-        previous_passive_channel_versions => #{},
-        previous_passive_voice_states => #{}
-    },
+    State1 = make_passive_state(<<"ch1">>, <<"msg1">>),
+    State2 = make_passive_state(<<"ch2">>, <<"msg2">>),
+    OtherState = make_passive_state(<<"ch3">>, <<"msg3">>),
     ok = store(SessionId, 100, State1),
     ok = store(SessionId, 200, State2),
     ok = store(OtherSessionId, 100, OtherState),
     ok = delete_all_for_session(SessionId),
-    ?assertEqual(#{
-        previous_passive_updates => #{},
-        previous_passive_channel_versions => #{},
-        previous_passive_voice_states => #{}
-    }, lookup(SessionId, 100)),
-    ?assertEqual(#{
-        previous_passive_updates => #{},
-        previous_passive_channel_versions => #{},
-        previous_passive_voice_states => #{}
-    }, lookup(SessionId, 200)),
+    Empty = empty_passive_state(),
+    ?assertEqual(Empty, lookup(SessionId, 100)),
+    ?assertEqual(Empty, lookup(SessionId, 200)),
     ?assertEqual(OtherState, lookup(OtherSessionId, 100)),
     cleanup_table().
+
+make_passive_state(Ch, Msg) ->
+    #{
+        previous_passive_updates => #{Ch => Msg},
+        previous_passive_channel_versions => #{},
+        previous_passive_voice_states => #{}
+    }.
+
+empty_passive_state() ->
+    #{
+        previous_passive_updates => #{},
+        previous_passive_channel_versions => #{},
+        previous_passive_voice_states => #{}
+    }.
 
 store_overwrites_existing_test() ->
     cleanup_table(),
@@ -218,8 +207,11 @@ store_overwrites_existing_test() ->
 
 cleanup_table() ->
     case ets:whereis(?TABLE) of
-        undefined -> ok;
-        _ -> ets:delete(?TABLE), ok
+        undefined ->
+            ok;
+        _ ->
+            ets:delete(?TABLE),
+            ok
     end.
 
 -endif.

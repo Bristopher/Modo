@@ -1,32 +1,27 @@
 {
 	"$schema": "https://json.schemastore.org/tsconfig",
-	"extends": "../tsconfigs/frontend.json",
+	"extends": "./tsconfig.base.json",
 	"compilerOptions": {
 		"target": "ES2023",
-		"lib": ["DOM", "DOM.Iterable", "ES2023"],
+		"lib": ["DOM", "DOM.Iterable", "DOM.AsyncIterable", "ES2023"],
 		"moduleDetection": "force",
 		"verbatimModuleSyntax": true,
 		"allowArbitraryExtensions": true,
+		"allowImportingTsExtensions": true,
+		"noUncheckedSideEffectImports": false,
 		"sourceMap": true,
 		"noImplicitReturns": true,
 		"experimentalDecorators": true,
 		"emitDecoratorMetadata": true,
 		"paths": {
 			"@app/*": ["./src/*"],
+			"@fluxer/*": ["../packages/*", "../packages/*/src/index.ts"],
 			"@app_scripts/*": ["./scripts/*"],
 			"@pkgs/*": ["./pkgs/*"],
-			"@fluxer/constants/src/*": ["./../packages/constants/src/*"],
-			"@fluxer/date_utils/src/*": ["./../packages/date_utils/src/*"],
-			"@fluxer/geo_utils/src/*": ["./../packages/geo_utils/src/*"],
-			"@fluxer/limits/src/*": ["./../packages/limits/src/*"],
-			"@fluxer/list_utils/src/*": ["./../packages/list_utils/src/*"],
-			"@fluxer/markdown_parser/src/*": ["./../packages/markdown_parser/src/*"],
-			"@fluxer/number_utils/src/*": ["./../packages/number_utils/src/*"],
-			"@fluxer/schema/src/*": ["./../packages/schema/src/*"],
-			"@fluxer/snowflake/src/*": ["./../packages/snowflake/src/*"],
-			"@fluxer/ui/src/*": ["./../packages/ui/src/*"]
+			"livekit-client": ["./pkgs/livekit-client/src/index.ts"],
+			"livekit-client/e2ee-worker": ["./pkgs/livekit-client/src/e2ee/worker/e2ee.worker.ts"]
 		}
 	},
-	"include": ["./src/**/*", "./scripts/**/*"],
+	"include": ["./src/**/*", "./scripts/**/*", "./pkgs/livekit-client/src/type-polyfills/*.d.ts"],
 	"exclude": ["node_modules", "dist", "coverage"]
 }

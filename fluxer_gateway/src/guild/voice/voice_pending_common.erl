@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(voice_pending_common).
+-typing([eqwalizer]).
 
 -export([
     add_pending_connection/3,
@@ -28,13 +14,20 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
+-export_type([
+    connection_id/0,
+    pending_metadata/0,
+    pending_map/0
+]).
+
 -type connection_id() :: binary().
 -type pending_metadata() :: map().
 -type pending_map() :: #{connection_id() => pending_metadata()}.
 
--spec add_pending_connection(connection_id(), pending_metadata(), pending_map()) -> pending_map().
+-spec add_pending_connection(connection_id(), pending_metadata(), pending_map()) ->
+    pending_map().
 add_pending_connection(ConnectionId, Metadata, PendingMap) ->
-    maps:put(ConnectionId, Metadata#{joined_at => erlang:system_time(millisecond)}, PendingMap).
+    PendingMap#{ConnectionId => Metadata#{joined_at => erlang:system_time(millisecond)}}.
 
 -spec remove_pending_connection(connection_id() | undefined, pending_map()) -> pending_map().
 remove_pending_connection(undefined, PendingMap) ->

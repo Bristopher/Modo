@@ -13,9 +13,11 @@
 		"noPropertyAccessFromIndexSignature": false,
 		"jsx": "react-jsx",
 		"paths": {
-			"@electron/*": ["./src/*"]
+			"@electron/*": ["./src/*"],
+			"@fluxer/voice_engine_v2": ["../packages/voice_engine_v2/src/index.ts"],
+			"@fluxer/voice_engine_v2/*": ["../packages/voice_engine_v2/src/*"]
 		}
 	},
-	"include": ["src/**/*"],
+	"include": ["src/**/*", "../packages/voice_engine_v2/src/**/*"],
 	"exclude": ["node_modules", "dist"]
 }

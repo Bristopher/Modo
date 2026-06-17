@@ -1,0 +1,162 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: build app-proxy
+
+on:
+  workflow_dispatch:
+    inputs:
+      build-version:
+        description: "Explicit Fluxer CalVer build version (YYYY.MDD.MICRO, UTC HHMMSS without leading zeroes) to use instead of automatic UTC clock allocation"
+        type: string
+        required: false
+        default: ""
+  workflow_call:
+    inputs:
+      build-version:
+        description: "Explicit Fluxer CalVer build version (YYYY.MDD.MICRO, UTC HHMMSS without leading zeroes) to use instead of automatic UTC clock allocation"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  actions: read
+  contents: read
+  packages: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  GHCR_OWNER: ${{ github.repository_owner }}
+
+jobs:
+  meta:
+    name: resolve metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      build_version: ${{ steps.vars.outputs.build_version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        env:
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/gitconfig
+      - name: Set up Rust toolchain (CI helpers)
+        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
+        with:
+          toolchain: "1.93.0"
+      - name: set variables
+        id: vars
+        run: >-
+          cargo run --locked --quiet --manifest-path tools/ci/Cargo.toml -- build-app-proxy
+          --step set_metadata
+          --build-version "${{ inputs['build-version'] }}"
+
+  build:
+    name: build app-proxy (amd64)
+    needs: meta
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        env:
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/gitconfig
+      - name: Set up Rust toolchain (CI helpers)
+        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
+        with:
+          toolchain: "1.93.0"
+      - name: prepare docker config
+        run: >-
+          cargo run --locked --quiet --manifest-path tools/ci/Cargo.toml -- build-app-proxy
+          --step prepare_docker_config
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: configure ghcr auth
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          cargo run --locked --quiet --manifest-path tools/ci/Cargo.toml -- build-app-proxy
+          --step configure_ghcr_auth
+
+      - name: build and push image + extract assets
+        env:
+          BUILD_VERSION: ${{ needs.meta.outputs.build_version }}
+          PUBLIC_ASSET_BASE_URL: https://fluxerstatic.com
+          CACHE_FROM: type=gha,scope=fluxer-app-proxy
+          CACHE_TO: type=gha,scope=fluxer-app-proxy,mode=max
+          DOCKER_BUILD_SUMMARY: false
+          DOCKER_BUILD_RECORD_UPLOAD: false
+        run: >-
+          cargo run --locked --quiet --manifest-path tools/ci/Cargo.toml -- build-app-proxy
+          --step build_and_extract
+
+      - name: generate asset manifest
+        run: >-
+          cargo run --locked --quiet --manifest-path tools/ci/Cargo.toml -- build-app-proxy
+          --step generate_asset_manifest
+
+      - name: upload assets to S3 static bucket
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          S3_ENDPOINT: https://ewr1.vultrobjects.com
+          STATIC_BUCKET: fluxer-static
+        run: >-
+          cargo run --locked --quiet --manifest-path tools/ci/Cargo.toml -- build-app-proxy
+          --step upload_assets
+
+  build-arm64:
+    name: build app-proxy (arm64)
+    needs: meta
+    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        env:
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/gitconfig
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: fluxer_app_proxy/Dockerfile
+          push: true
+          provenance: false
+          platforms: linux/arm64
+          tags: ghcr.io/${{ env.GHCR_OWNER }}/fluxer-app-proxy:${{ needs.meta.outputs.build_version }}-arm64
+          build-args: |
+            BUILD_VERSION=${{ needs.meta.outputs.build_version }}
+            PUBLIC_ASSET_BASE_URL=https://fluxerstatic.com
+          cache-from: type=gha,scope=fluxer-app-proxy-arm64
+          cache-to: type=gha,scope=fluxer-app-proxy-arm64,mode=max,ignore-error=true
+        env:
+          DOCKER_BUILD_SUMMARY: false
+          DOCKER_BUILD_RECORD_UPLOAD: false
+
+  merge:
+    name: merge multi-arch manifest
+    needs: [meta, build, build-arm64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: fuse amd64 + arm64 into a multi-arch manifest
+        env:
+          IMAGE: ghcr.io/${{ env.GHCR_OWNER }}/fluxer-app-proxy
+          VERSION: ${{ needs.meta.outputs.build_version }}
+        run: |
+          set -euo pipefail
+          amd64_digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r '.digest')"
+          echo "amd64 digest: ${amd64_digest}"
+          docker buildx imagetools create \
+            -t "${IMAGE}:${VERSION}" \
+            -t "${IMAGE}:v1" \
+            -t "${IMAGE}:latest" \
+            "${IMAGE}@${amd64_digest}" \
+            "${IMAGE}:${VERSION}-arm64"
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"

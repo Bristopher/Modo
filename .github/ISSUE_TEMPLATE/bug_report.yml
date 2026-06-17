@@ -1,27 +1,26 @@
 name: Bug report
-description: Report a reproducible problem in Fluxer
-labels: ['bug']
+description: Report a reproducible problem in Fluxer.
+labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report.
-
-        Please check our status page at https://fluxerstatus.com and search for existing issues before filing.
-        Security issues should go to https://fluxer.app/security.
+        Search existing issues before filing.
+        Report security issues at https://fluxer.app/security.
+        Keep AI-generated text out of bug reports, except for direct translation if English is not your native language.
   - type: textarea
     id: summary
     attributes:
       label: Summary
       description: What happened, and what did you expect instead?
-      placeholder: "When I ..., the app ..., but I expected ..."
+      placeholder: When I ..., the app ..., but I expected ...
     validations:
       required: true
   - type: textarea
-    id: repro
+    id: steps
     attributes:
       label: Steps to reproduce
-      description: Provide clear, numbered steps.
+      description: Use numbered steps.
       placeholder: |
         1. Go to ...
         2. Click ...
@@ -31,21 +30,20 @@ body:
   - type: textarea
     id: environment
     attributes:
-      label: Environment (optional)
-      description: Include versions that matter (commit/tag, OS, runtime, browser/device).
+      label: Environment
+      description: Add versions, OS, browser, device, or commit when relevant.
       placeholder: |
-        - Commit/Tag:
-        - OS:
-        - Runtime:
-        - Browser (if applicable):
+        Version:
+        OS:
+        Browser:
+        Device:
     validations:
       required: false
   - type: textarea
-    id: logs
+    id: evidence
     attributes:
-      label: Logs or screenshots (optional)
-      description: Paste logs (redact secrets) or attach screenshots/recordings.
-      placeholder: "Paste stack traces, console output, network errors, etc."
+      label: Logs or screenshots
+      description: Add logs, screenshots, recordings, or links. Redact secrets.
     validations:
       required: false
   - type: checkboxes
@@ -53,5 +51,7 @@ body:
     attributes:
       label: Checks
       options:
-        - label: I searched for existing issues and didn't find a duplicate.
+        - label: I searched existing issues.
+          required: true
+        - label: I wrote this report in my own words, except for direct translation if needed.
           required: true

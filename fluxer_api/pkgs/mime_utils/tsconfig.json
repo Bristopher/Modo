@@ -1,0 +1,13 @@
+{
+	"extends": "../../../tsconfigs/base.json",
+	"compilerOptions": {
+		"composite": true,
+		"rootDir": ".",
+		"outDir": "dist",
+		"paths": {
+			"@fluxer/*": ["../../../packages/*", "../../../packages/*/src/index.ts"],
+			"@pkgs/*": ["../*"]
+		}
+	},
+	"include": ["src"]
+}

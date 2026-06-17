@@ -1,27 +1,20 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(guild_voice_permission_sync).
+-typing([eqwalizer]).
 
 -export([
     sync_user_voice_permissions/2,
     sync_all_voice_permissions_for_channel/2,
     maybe_sync_permissions_on_role_update/2,
     maybe_sync_permissions_on_member_update/2
+]).
+
+-export_type([
+    guild_state/0,
+    voice_state/0,
+    user_id/0,
+    channel_id/0
 ]).
 
 -type guild_state() :: map().
@@ -36,64 +29,71 @@
 -spec sync_user_voice_permissions(user_id(), guild_state()) -> ok.
 sync_user_voice_permissions(UserId, State) ->
     VoiceStates = voice_state_utils:voice_states(State),
-    GuildId = map_utils:get_integer(State, id, 0),
-    UserVoiceStates = maps:filter(
+    case state_guild_id(State) of
+        undefined ->
+            ok;
+        GuildId ->
+            sync_matching_user_voice_states(GuildId, UserId, VoiceStates, State)
+    end.
+
+-spec sync_matching_user_voice_states(integer(), user_id(), map(), guild_state()) -> ok.
+sync_matching_user_voice_states(GuildId, UserId, VoiceStates, State) ->
+    maps:foreach(
         fun(_ConnId, VoiceState) ->
-            voice_state_utils:voice_state_user_id(VoiceState) =:= UserId
+            maybe_sync_user_voice_state(GuildId, UserId, VoiceState, State)
         end,
         VoiceStates
     ),
-    maps:foreach(
-        fun(_ConnId, VoiceState) ->
-            sync_voice_state_permissions(GuildId, UserId, VoiceState, State)
-        end,
-        UserVoiceStates
-    ),
     ok.
+
+-spec maybe_sync_user_voice_state(integer(), user_id(), voice_state(), guild_state()) -> ok.
+maybe_sync_user_voice_state(GuildId, UserId, VoiceState, State) ->
+    case voice_state_utils:voice_state_user_id(VoiceState) of
+        UserId -> sync_voice_state_permissions(GuildId, UserId, VoiceState, State);
+        _ -> ok
+    end.
 
 -spec sync_all_voice_permissions_for_channel(channel_id(), guild_state()) -> ok.
 sync_all_voice_permissions_for_channel(ChannelId, State) ->
     VoiceStates = voice_state_utils:voice_states(State),
-    GuildId = map_utils:get_integer(State, id, 0),
-    ChannelVoiceStates = maps:filter(
+    case state_guild_id(State) of
+        undefined ->
+            ok;
+        GuildId ->
+            do_sync_channel_permissions(GuildId, ChannelId, VoiceStates, State)
+    end.
+
+-spec do_sync_channel_permissions(integer(), channel_id(), map(), guild_state()) -> ok.
+do_sync_channel_permissions(GuildId, ChannelId, VoiceStates, State) ->
+    maps:foreach(
         fun(_ConnId, VoiceState) ->
-            voice_state_utils:voice_state_channel_id(VoiceState) =:= ChannelId
+            maybe_sync_channel_voice_state(GuildId, ChannelId, VoiceState, State)
         end,
         VoiceStates
     ),
-    maps:foreach(
-        fun(_ConnId, VoiceState) ->
-            UserId = voice_state_utils:voice_state_user_id(VoiceState),
-            case UserId of
-                undefined -> ok;
-                _ -> sync_voice_state_permissions(GuildId, UserId, VoiceState, State)
-            end
-        end,
-        ChannelVoiceStates
-    ),
     ok.
+
+-spec maybe_sync_channel_voice_state(integer(), channel_id(), voice_state(), guild_state()) ->
+    ok.
+maybe_sync_channel_voice_state(GuildId, ChannelId, VoiceState, State) ->
+    case voice_state_utils:voice_state_channel_id(VoiceState) of
+        ChannelId -> sync_channel_voice_state_permissions(GuildId, VoiceState, State);
+        _ -> ok
+    end.
+
+-spec sync_channel_voice_state_permissions(integer(), voice_state(), guild_state()) -> ok.
+sync_channel_voice_state_permissions(GuildId, VoiceState, State) ->
+    case voice_state_utils:voice_state_user_id(VoiceState) of
+        undefined -> ok;
+        UserId -> sync_voice_state_permissions(GuildId, UserId, VoiceState, State)
+    end.
 
 -spec maybe_sync_permissions_on_role_update(map(), guild_state()) -> ok.
 maybe_sync_permissions_on_role_update(RoleUpdate, State) ->
-    RoleId = maps:get(<<"id">>, RoleUpdate, undefined),
+    RoleId = snowflake_id:parse_optional(maps:get(<<"id">>, RoleUpdate, undefined)),
     case RoleId of
-        undefined ->
-            ok;
-        _ ->
-            OldPermissions = maps:get(<<"old_permissions">>, RoleUpdate, 0),
-            NewPermissions = maps:get(<<"permissions">>, RoleUpdate, 0),
-            AdminPerm = constants:administrator_permission(),
-            SpeakPerm = constants:speak_permission(),
-            StreamPerm = constants:stream_permission(),
-            VoicePerms = AdminPerm bor SpeakPerm bor StreamPerm,
-            OldVoicePerms = OldPermissions band VoicePerms,
-            NewVoicePerms = NewPermissions band VoicePerms,
-            case OldVoicePerms =/= NewVoicePerms of
-                true ->
-                    sync_users_with_role(RoleId, State);
-                false ->
-                    ok
-            end
+        undefined -> ok;
+        RoleIdInt -> sync_users_with_role(RoleIdInt, State)
     end.
 
 -spec maybe_sync_permissions_on_member_update(map(), guild_state()) -> ok.
@@ -103,14 +103,7 @@ maybe_sync_permissions_on_member_update(MemberUpdate, State) ->
         undefined ->
             ok;
         _ ->
-            OldRoles = maps:get(<<"old_roles">>, MemberUpdate, []),
-            NewRoles = maps:get(<<"roles">>, MemberUpdate, []),
-            case OldRoles =/= NewRoles of
-                true ->
-                    sync_user_voice_permissions(UserId, State);
-                false ->
-                    ok
-            end
+            sync_user_voice_permissions(UserId, State)
     end.
 
 -spec sync_voice_state_permissions(integer(), user_id(), voice_state(), guild_state()) -> ok.
@@ -123,30 +116,91 @@ sync_voice_state_permissions(GuildId, UserId, VoiceState, State) ->
         {_, undefined} ->
             ok;
         {ChId, ConnId} when is_integer(ChId), is_binary(ConnId) ->
-            VoicePermissions = voice_utils:compute_voice_permissions(UserId, ChId, State),
-            dispatch_permission_update(GuildId, ChId, UserId, ConnId, VoicePermissions, State)
+            sync_validated_voice_state(GuildId, UserId, ChId, ConnId, VoiceState, State)
     end.
 
+-spec sync_validated_voice_state(
+    integer(), user_id(), channel_id(), binary(), voice_state(), guild_state()
+) -> ok.
+sync_validated_voice_state(GuildId, UserId, ChId, ConnId, VoiceState, State) ->
+    case user_has_base_voice_access(UserId, ChId, State) of
+        true ->
+            VoicePermissions0 = voice_utils:compute_voice_permissions(UserId, ChId, State),
+            VoicePermissions = VoicePermissions0#{
+                deaf => maps:get(<<"deaf">>, VoiceState, false)
+            },
+            dispatch_permission_update(
+                GuildId, ChId, UserId, ConnId, VoicePermissions, State
+            );
+        false ->
+            dispatch_force_disconnect(GuildId, ChId, UserId, ConnId, State)
+    end.
+
+-spec user_has_base_voice_access(user_id(), channel_id(), guild_state()) -> boolean().
+user_has_base_voice_access(UserId, ChannelId, State) ->
+    case guild_virtual_channel_access:has_virtual_access(UserId, ChannelId, State) of
+        true ->
+            true;
+        false ->
+            Permissions = guild_permissions:get_member_permissions(UserId, ChannelId, State),
+            ViewPerm = constants:view_channel_permission(),
+            ConnectPerm = constants:connect_permission(),
+            HasView = permission_bits:has(Permissions, ViewPerm),
+            HasConnect = permission_bits:has(Permissions, ConnectPerm),
+            HasView andalso HasConnect
+    end.
+
+-spec dispatch_force_disconnect(
+    integer(), channel_id(), user_id(), binary(), guild_state()
+) -> ok.
+dispatch_force_disconnect(GuildId, ChannelId, UserId, ConnectionId, State) ->
+    case maps:get(test_permission_sync_fun, State, undefined) of
+        Fun when is_function(Fun, 5) ->
+            _ = Fun(GuildId, ChannelId, UserId, ConnectionId, #{disconnected => true}),
+            ok;
+        _ ->
+            spawn_force_disconnect(GuildId, ChannelId, UserId, ConnectionId),
+            ok
+    end.
+
+-spec spawn_force_disconnect(integer(), channel_id(), user_id(), binary()) -> pid().
+spawn_force_disconnect(GuildId, ChannelId, UserId, ConnectionId) ->
+    spawn(fun() ->
+        guild_voice_disconnect:force_disconnect_participant(
+            GuildId, ChannelId, UserId, ConnectionId
+        )
+    end).
+
 -spec dispatch_permission_update(
-    integer(), channel_id(), user_id(), binary(), map(), guild_state()
+    integer(), channel_id(), user_id(), binary(), voice_utils:voice_permissions(), guild_state()
 ) ->
     ok.
 dispatch_permission_update(GuildId, ChannelId, UserId, ConnectionId, VoicePermissions, State) ->
     case maps:get(test_permission_sync_fun, State, undefined) of
         Fun when is_function(Fun, 5) ->
-            Fun(GuildId, ChannelId, UserId, ConnectionId, VoicePermissions);
+            _ = Fun(GuildId, ChannelId, UserId, ConnectionId, VoicePermissions),
+            ok;
         _ ->
-            spawn(fun() ->
-                enforce_voice_permissions_in_livekit(
-                    GuildId, ChannelId, UserId, ConnectionId, VoicePermissions
-                )
-            end)
+            spawn_permission_update(GuildId, ChannelId, UserId, ConnectionId, VoicePermissions),
+            ok
     end.
 
+-spec spawn_permission_update(
+    integer(), channel_id(), user_id(), binary(), voice_utils:voice_permissions()
+) -> pid().
+spawn_permission_update(GuildId, ChannelId, UserId, ConnId, VoicePerms) ->
+    spawn(fun() ->
+        enforce_voice_permissions_in_livekit(
+            GuildId, ChannelId, UserId, ConnId, VoicePerms
+        )
+    end).
+
 -spec enforce_voice_permissions_in_livekit(
-    integer(), channel_id(), user_id(), binary(), map()
+    integer(), channel_id(), user_id(), binary(), voice_utils:voice_permissions()
 ) -> ok.
-enforce_voice_permissions_in_livekit(GuildId, ChannelId, UserId, ConnectionId, VoicePermissions) ->
+enforce_voice_permissions_in_livekit(
+    GuildId, ChannelId, UserId, ConnectionId, VoicePermissions
+) ->
     Req = voice_utils:build_update_participant_permissions_rpc_request(
         GuildId, ChannelId, UserId, ConnectionId, VoicePermissions
     ),
@@ -157,56 +211,71 @@ enforce_voice_permissions_in_livekit(GuildId, ChannelId, UserId, ConnectionId, V
             ok
     end.
 
--spec sync_users_with_role(binary() | integer(), guild_state()) -> ok.
+-spec sync_users_with_role(integer(), guild_state()) -> ok.
 sync_users_with_role(RoleId, State) ->
-    RoleIdBin = ensure_binary(RoleId),
     VoiceStates = voice_state_utils:voice_states(State),
-    GuildId = map_utils:get_integer(State, id, 0),
+    case state_guild_id(State) of
+        undefined ->
+            ok;
+        GuildId ->
+            do_sync_users_with_role(GuildId, RoleId, VoiceStates, State)
+    end.
+
+-spec do_sync_users_with_role(integer(), integer(), map(), guild_state()) -> ok.
+do_sync_users_with_role(GuildId, RoleId, VoiceStates, State) ->
+    RoleUsers = user_ids_with_role(RoleId, State),
     maps:foreach(
         fun(_ConnId, VoiceState) ->
-            UserId = voice_state_utils:voice_state_user_id(VoiceState),
-            case UserId of
-                undefined ->
-                    ok;
-                _ ->
-                    case user_has_role(UserId, RoleIdBin, State) of
-                        true ->
-                            sync_voice_state_permissions(GuildId, UserId, VoiceState, State);
-                        false ->
-                            ok
-                    end
-            end
+            maybe_sync_role_voice_state(GuildId, RoleUsers, VoiceState, State)
         end,
         VoiceStates
     ),
     ok.
 
--spec user_has_role(user_id(), binary(), guild_state()) -> boolean().
-user_has_role(UserId, RoleIdBin, State) ->
-    case guild_voice_member:find_member_by_user_id(UserId, State) of
+-spec maybe_sync_role_voice_state(integer(), sets:set(user_id()), voice_state(), guild_state()) ->
+    ok.
+maybe_sync_role_voice_state(GuildId, RoleUsers, VoiceState, State) ->
+    UserId = voice_state_utils:voice_state_user_id(VoiceState),
+    case UserId of
         undefined ->
-            false;
-        Member ->
-            Roles = maps:get(<<"roles">>, Member, []),
-            lists:member(RoleIdBin, Roles)
+            ok;
+        _ ->
+            sync_voice_state_permissions_if_role_matches(
+                GuildId, RoleUsers, UserId, VoiceState, State
+            )
     end.
+
+-spec sync_voice_state_permissions_if_role_matches(
+    integer(), sets:set(user_id()), user_id(), voice_state(), guild_state()
+) -> ok.
+sync_voice_state_permissions_if_role_matches(GuildId, RoleUsers, UserId, VoiceState, State) ->
+    case sets:is_element(UserId, RoleUsers) of
+        true -> sync_voice_state_permissions(GuildId, UserId, VoiceState, State);
+        false -> ok
+    end.
+
+-spec user_ids_with_role(integer(), guild_state()) -> sets:set(user_id()).
+user_ids_with_role(RoleId, State) ->
+    Data = maps:get(data, State, #{}),
+    RoleIndex = guild_data_index:member_role_index(Data),
+    sets:from_list(maps:keys(maps:get(RoleId, RoleIndex, #{}))).
 
 -spec get_member_user_id(map()) -> user_id() | undefined.
 get_member_user_id(MemberUpdate) ->
-    User = maps:get(<<"user">>, MemberUpdate, #{}),
-    map_utils:get_integer(User, <<"id">>, undefined).
+    User = map_utils:ensure_map(maps:get(<<"user">>, MemberUpdate, #{})),
+    guild_voice_connection_normalize:normalize_positive_snowflake(
+        maps:get(<<"id">>, User, undefined)
+    ).
 
--spec ensure_binary(binary() | integer()) -> binary().
-ensure_binary(Value) when is_binary(Value) -> Value;
-ensure_binary(Value) when is_integer(Value) -> integer_to_binary(Value).
+-spec state_guild_id(guild_state()) -> integer() | undefined.
+state_guild_id(State) ->
+    guild_voice_connection_normalize:normalize_positive_snowflake(
+        maps:get(id, State, undefined)
+    ).
 
 -ifdef(TEST).
 
-sync_user_voice_permissions_syncs_connected_user_test() ->
-    Self = self(),
-    TestFun = fun(GuildId, ChannelId, UserId, ConnectionId, Permissions) ->
-        Self ! {synced, GuildId, ChannelId, UserId, ConnectionId, Permissions}
-    end,
+build_sync_test_state(TestFun) ->
     UserId = 10,
     ChannelId = 500,
     GuildId = 42,
@@ -214,48 +283,50 @@ sync_user_voice_permissions_syncs_connected_user_test() ->
     VoiceState = #{
         <<"user_id">> => integer_to_binary(UserId),
         <<"channel_id">> => integer_to_binary(ChannelId),
-        <<"connection_id">> => <<"test-conn">>
+        <<"connection_id">> => <<"test-conn">>,
+        <<"deaf">> => true
     },
     Permissions =
         constants:view_channel_permission() bor
             constants:connect_permission() bor
             constants:speak_permission() bor
             constants:stream_permission(),
-    State = #{
+    #{
         id => GuildId,
         voice_states => #{<<"conn">> => VoiceState},
         test_permission_sync_fun => TestFun,
-        data => #{
-            <<"guild">> => #{<<"owner_id">> => <<"1">>},
-            <<"roles">> => [
-                #{
-                    <<"id">> => integer_to_binary(RoleId),
-                    <<"permissions">> => integer_to_binary(Permissions)
-                },
-                #{
-                    <<"id">> => integer_to_binary(GuildId),
-                    <<"permissions">> => <<"0">>
-                }
-            ],
-            <<"members">> => [
-                #{
-                    <<"user">> => #{<<"id">> => integer_to_binary(UserId)},
-                    <<"roles">> => [integer_to_binary(RoleId)]
-                }
-            ],
-            <<"channels">> => [
-                #{
-                    <<"id">> => integer_to_binary(ChannelId),
-                    <<"permission_overwrites">> => []
-                }
-            ]
-        }
-    },
-    ok = sync_user_voice_permissions(UserId, State),
+        data => build_sync_test_data(GuildId, RoleId, UserId, ChannelId, Permissions)
+    }.
+
+build_sync_test_data(GuildId, RoleId, UserId, ChannelId, Permissions) ->
+    RoleIdBin = integer_to_binary(RoleId),
+    PermsBin = integer_to_binary(Permissions),
+    GuildIdBin = integer_to_binary(GuildId),
+    UserIdBin = integer_to_binary(UserId),
+    ChIdBin = integer_to_binary(ChannelId),
+    #{
+        <<"guild">> => #{<<"owner_id">> => <<"1">>},
+        <<"roles">> => [
+            #{<<"id">> => RoleIdBin, <<"permissions">> => PermsBin},
+            #{<<"id">> => GuildIdBin, <<"permissions">> => <<"0">>}
+        ],
+        <<"members">> => [
+            #{<<"user">> => #{<<"id">> => UserIdBin}, <<"roles">> => [RoleIdBin]}
+        ],
+        <<"channels">> => [
+            #{<<"id">> => ChIdBin, <<"permission_overwrites">> => []}
+        ]
+    }.
+
+sync_user_voice_permissions_syncs_connected_user_test() ->
+    TestFun = make_sync_test_fun(),
+    State = build_sync_test_state(TestFun),
+    ok = sync_user_voice_permissions(10, State),
     receive
-        {synced, GuildId, ChannelId, UserId, <<"test-conn">>, Perms} ->
+        {synced, 42, 500, 10, <<"test-conn">>, Perms} ->
             ?assertEqual(true, maps:get(can_speak, Perms)),
-            ?assertEqual(true, maps:get(can_stream, Perms))
+            ?assertEqual(true, maps:get(can_stream, Perms)),
+            ?assertEqual(true, maps:get(deaf, Perms))
     after 100 ->
         ?assert(false)
     end.
@@ -271,13 +342,123 @@ maybe_sync_permissions_on_member_update_no_role_change_test() ->
     State = #{id => 42, voice_states => #{}},
     MemberUpdate = #{
         <<"user">> => #{<<"id">> => <<"10">>},
-        <<"roles">> => [<<"1">>],
-        <<"old_roles">> => [<<"1">>]
+        <<"roles">> => [<<"1">>]
     },
     ?assertEqual(ok, maybe_sync_permissions_on_member_update(MemberUpdate, State)).
 
-ensure_binary_test() ->
-    ?assertEqual(<<"123">>, ensure_binary(123)),
-    ?assertEqual(<<"abc">>, ensure_binary(<<"abc">>)).
+maybe_sync_permissions_on_role_update_uses_role_index_test() ->
+    TestFun = make_sync_test_fun(),
+    GuildId = 42,
+    RoleId = 999,
+    OtherRoleId = 1000,
+    UserId = 10,
+    OtherUserId = 20,
+    ChannelId = 500,
+    Permissions =
+        constants:view_channel_permission() bor
+            constants:connect_permission() bor
+            constants:speak_permission(),
+    State = #{
+        id => GuildId,
+        voice_states => #{
+            <<"conn1">> => #{
+                <<"user_id">> => integer_to_binary(UserId),
+                <<"channel_id">> => integer_to_binary(ChannelId),
+                <<"connection_id">> => <<"conn1">>
+            },
+            <<"conn2">> => #{
+                <<"user_id">> => integer_to_binary(OtherUserId),
+                <<"channel_id">> => integer_to_binary(ChannelId),
+                <<"connection_id">> => <<"conn2">>
+            }
+        },
+        test_permission_sync_fun => TestFun,
+        data => role_sync_test_data(
+            GuildId, RoleId, OtherRoleId, UserId, OtherUserId, ChannelId, Permissions
+        )
+    },
+    ok = maybe_sync_permissions_on_role_update(
+        #{<<"id">> => integer_to_binary(RoleId)}, State
+    ),
+    receive
+        {synced, GuildId, ChannelId, UserId, <<"conn1">>, _Perms} -> ok
+    after 200 ->
+        ?assert(false)
+    end,
+    receive
+        {synced, GuildId, ChannelId, OtherUserId, <<"conn2">>, _OtherPerms} ->
+            ?assert(false)
+    after 50 ->
+        ok
+    end.
+
+sync_disconnects_when_connect_permission_lost_test() ->
+    TestFun = make_sync_test_fun(),
+    UserId = 10,
+    ChannelId = 500,
+    GuildId = 42,
+    RoleId = 999,
+    ViewOnly = constants:view_channel_permission(),
+    State = build_sync_test_state_with_perms(
+        TestFun, GuildId, RoleId, UserId, ChannelId, ViewOnly
+    ),
+    ok = sync_user_voice_permissions(UserId, State),
+    receive
+        {synced, GuildId, ChannelId, UserId, <<"test-conn">>, Perms} ->
+            ?assertEqual(true, maps:get(disconnected, Perms, false))
+    after 200 ->
+        ?assert(false)
+    end.
+
+make_sync_test_fun() ->
+    Self = self(),
+    fun(GId, ChId, UId, ConnId, Perms) ->
+        Self ! {synced, GId, ChId, UId, ConnId, Perms}
+    end.
+
+build_sync_test_state_with_perms(TestFun, GuildId, RoleId, UserId, ChannelId, Permissions) ->
+    VoiceState = #{
+        <<"user_id">> => integer_to_binary(UserId),
+        <<"channel_id">> => integer_to_binary(ChannelId),
+        <<"connection_id">> => <<"test-conn">>,
+        <<"deaf">> => false
+    },
+    #{
+        id => GuildId,
+        voice_states => #{<<"conn">> => VoiceState},
+        test_permission_sync_fun => TestFun,
+        data => build_sync_test_data(GuildId, RoleId, UserId, ChannelId, Permissions)
+    }.
+
+role_sync_test_data(
+    GuildId, RoleId, OtherRoleId, UserId, OtherUserId, ChannelId, Permissions
+) ->
+    guild_data_index:normalize_data(#{
+        <<"guild">> => #{<<"owner_id">> => <<"1">>},
+        <<"roles">> => [
+            #{
+                <<"id">> => integer_to_binary(RoleId),
+                <<"permissions">> => integer_to_binary(Permissions)
+            },
+            #{
+                <<"id">> => integer_to_binary(OtherRoleId),
+                <<"permissions">> => integer_to_binary(Permissions)
+            },
+            #{<<"id">> => integer_to_binary(GuildId), <<"permissions">> => <<"0">>}
+        ],
+        <<"members">> => [
+            #{
+                <<"user">> => #{<<"id">> => integer_to_binary(UserId)},
+                <<"roles">> => [integer_to_binary(RoleId)]
+            },
+            #{
+                <<"user">> => #{<<"id">> => integer_to_binary(OtherUserId)},
+                <<"roles">> => [integer_to_binary(OtherRoleId)]
+            }
+        ],
+        <<"channels">> => [
+            #{<<"id">> => integer_to_binary(ChannelId), <<"permission_overwrites">> => []}
+        ]
+    }).
 
 -endif.

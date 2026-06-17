@@ -1,35 +1,18 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(guild_client).
+-typing([eqwalizer]).
 
 -export([voice_state_update/3]).
 -export([voice_state_update/4]).
+-export([do_call/3]).
+-export([request_trace/1]).
 
 -export_type([
     voice_state_update_success/0,
     voice_state_update_error/0,
     voice_state_update_result/0
 ]).
-
--define(CIRCUIT_BREAKER_TABLE, guild_circuit_breaker).
--define(FAILURE_THRESHOLD, 5).
--define(RECOVERY_TIMEOUT_MS, 30000).
--define(MAX_CONCURRENT, 50).
 
 -type voice_state_update_success() :: #{
     success := true,
@@ -40,365 +23,267 @@
     needs_token => boolean()
 }.
 
+-type voice_state_update_rejection() :: #{
+    success := false,
+    ack := map()
+}.
+
 -type voice_state_update_error() :: {error, atom(), atom()}.
 
 -type voice_state_update_result() ::
     {ok, voice_state_update_success()}
+    | {ok, voice_state_update_rejection()}
     | {error, timeout}
     | {error, noproc}
     | {error, circuit_breaker_open}
     | {error, too_many_requests}
     | {error, atom(), atom()}.
 
--type circuit_state() :: closed | open | half_open.
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+-endif.
 
 -spec voice_state_update(pid(), map(), timeout()) -> voice_state_update_result().
 voice_state_update(GuildPid, Request, Timeout) ->
-    ensure_table(),
-    TargetPid = GuildPid,
-    case acquire_slot(TargetPid) of
-        ok ->
-            try
-                execute_with_circuit_breaker(TargetPid, Request, Timeout)
-            after
-                release_slot(TargetPid)
-            end;
-        {error, Reason} ->
-            {error, Reason}
+    guild_client_circuit_breaker:ensure_table(),
+    case guild_client_circuit_breaker:acquire_slot(GuildPid) of
+        ok -> execute_with_slot(GuildPid, Request, Timeout);
+        {error, Reason} -> {error, Reason}
+    end.
+
+-spec execute_with_slot(pid(), map(), timeout()) -> voice_state_update_result().
+execute_with_slot(TargetPid, Request, Timeout) ->
+    try
+        circuit_breaker_execute(TargetPid, Request, Timeout)
+    after
+        guild_client_circuit_breaker:release_slot(TargetPid)
     end.
 
 -spec voice_state_update(pid(), integer(), map(), timeout()) -> voice_state_update_result().
 voice_state_update(GuildPid, GuildId, Request, Timeout) ->
-    ensure_table(),
-    TargetPid = resolve_voice_pid(GuildId, GuildPid),
-    case acquire_slot(TargetPid) of
-        ok ->
-            try
-                execute_with_circuit_breaker(TargetPid, Request, Timeout)
-            after
-                release_slot(TargetPid)
-            end;
+    guild_client_circuit_breaker:ensure_table(),
+    maybe
+        {ok, TargetPid} ?= resolve_voice_pid(GuildId, GuildPid),
+        ok ?= guild_client_circuit_breaker:acquire_slot(TargetPid),
+        execute_with_slot(TargetPid, Request, Timeout)
+    else
+        {error, not_found} ->
+            logger:warning(
+                "guild_client_no_voice_server:"
+                " guild_id=~p guild_pid=~p request=~p",
+                [GuildId, GuildPid, request_trace(Request)]
+            ),
+            {error, noproc};
         {error, Reason} ->
             {error, Reason}
     end.
 
--spec resolve_voice_pid(integer(), pid()) -> pid().
+-spec resolve_voice_pid(integer(), pid()) -> {ok, pid()} | {error, not_found}.
 resolve_voice_pid(GuildId, FallbackGuildPid) ->
-    case guild_voice_server:lookup(GuildId) of
-        {ok, VoicePid} -> VoicePid;
-        {error, not_found} -> FallbackGuildPid
-    end.
-
--spec execute_with_circuit_breaker(pid(), map(), timeout()) -> voice_state_update_result().
-execute_with_circuit_breaker(GuildPid, Request, Timeout) ->
-    case get_circuit_state(GuildPid) of
-        open ->
-            {error, circuit_breaker_open};
-        State when State =:= closed; State =:= half_open ->
-            Result = do_call(GuildPid, Request, Timeout),
-            update_circuit_state(GuildPid, Result, State),
+    case guild_voice_server:resolve_result(GuildId, FallbackGuildPid) of
+        {ok, FallbackGuildPid} ->
+            validate_voice_server_pid(FallbackGuildPid);
+        Result ->
             Result
     end.
 
+-spec validate_voice_server_pid(pid()) -> {ok, pid()} | {error, not_found}.
+validate_voice_server_pid(Pid) ->
+    case guild_voice_server:is_voice_server_pid(Pid) of
+        true -> {ok, Pid};
+        false -> {error, not_found}
+    end.
+
+-spec circuit_breaker_execute(pid(), map(), timeout()) ->
+    voice_state_update_result().
+circuit_breaker_execute(Pid, Request, Timeout) ->
+    guild_client_circuit_breaker:execute_with_circuit_breaker(
+        Pid, Request, Timeout
+    ).
+
 -spec do_call(pid(), map(), timeout()) -> voice_state_update_result().
 do_call(GuildPid, Request, Timeout) ->
-    try gen_server:call(GuildPid, {voice_state_update, Request}, Timeout) of
-        Response when is_map(Response) ->
-            case maps:get(success, Response, false) of
-                true -> {ok, Response};
-                false -> {error, unknown, internal_error}
-            end;
-        {error, Category, ErrorAtom} when is_atom(Category), is_atom(ErrorAtom) ->
-            {error, Category, ErrorAtom}
+    try
+        Reply = gen_server:call(GuildPid, {voice_state_update, Request}, Timeout),
+        Result = normalize_voice_state_update_reply(Reply),
+        maybe_log_unexpected_reply(GuildPid, Reply, Result),
+        Result
     catch
-        exit:{timeout, _} -> {error, timeout};
-        exit:{noproc, _} -> {error, noproc};
-        exit:{normal, _} -> {error, noproc}
+        exit:ExitReason ->
+            handle_call_exit(GuildPid, ExitReason);
+        error:Reason ->
+            log_call_error(GuildPid, {error, Reason}),
+            {error, unknown, internal_error}
     end.
 
--spec get_circuit_state(pid()) -> circuit_state().
-get_circuit_state(GuildPid) ->
-    case safe_lookup(GuildPid) of
-        [] ->
-            closed;
-        [{_, #{state := open, opened_at := OpenedAt}}] ->
-            Now = erlang:system_time(millisecond),
-            case Now - OpenedAt > ?RECOVERY_TIMEOUT_MS of
-                true -> half_open;
-                false -> open
-            end;
-        [{_, #{state := State}}] ->
-            State
-    end.
+-spec handle_call_exit(pid(), term()) -> voice_state_update_result().
+handle_call_exit(GuildPid, {timeout, _}) ->
+    log_call_error(GuildPid, timeout),
+    {error, timeout};
+handle_call_exit(GuildPid, {noproc, _}) ->
+    log_call_error(GuildPid, noproc),
+    {error, noproc};
+handle_call_exit(GuildPid, {normal, _}) ->
+    log_call_error(GuildPid, normal_exit),
+    {error, noproc};
+handle_call_exit(GuildPid, {{nodedown, Node}, _}) ->
+    log_call_error(GuildPid, {nodedown, Node}),
+    {error, noproc};
+handle_call_exit(GuildPid, {shutdown, R}) ->
+    log_call_error(GuildPid, {shutdown, R}),
+    {error, noproc};
+handle_call_exit(GuildPid, {killed, R}) ->
+    log_call_error(GuildPid, {killed, R}),
+    {error, noproc};
+handle_call_exit(GuildPid, Reason) ->
+    log_call_error(GuildPid, {exit, Reason}),
+    {error, unknown, internal_error}.
 
--spec update_circuit_state(pid(), voice_state_update_result(), circuit_state()) -> ok.
-update_circuit_state(GuildPid, Result, PrevState) ->
-    IsSuccess = is_success_result(Result),
-    case {IsSuccess, PrevState} of
-        {true, half_open} ->
-            safe_delete(GuildPid),
-            ok;
-        {true, closed} ->
-            reset_failures(GuildPid);
-        {false, _} ->
-            record_failure(GuildPid)
-    end.
+-spec log_call_error(pid(), term()) -> ok.
+log_call_error(GuildPid, Reason) ->
+    logger:warning(
+        "guild_client_do_call_error:"
+        " guild_pid=~p reason=~p",
+        [GuildPid, Reason]
+    ),
+    ok.
 
--spec is_success_result(voice_state_update_result()) -> boolean().
-is_success_result({ok, _}) -> true;
-is_success_result(_) -> false.
+-spec maybe_log_unexpected_reply(pid(), term(), voice_state_update_result()) -> ok.
+maybe_log_unexpected_reply(GuildPid, Reply, {error, unknown, internal_error}) ->
+    logger:warning(
+        "guild_client_do_call_unexpected_reply: guild_pid=~p pid_info=~p raw_reply=~p",
+        [GuildPid, pid_trace(GuildPid), Reply]
+    ),
+    ok;
+maybe_log_unexpected_reply(_GuildPid, _Reply, _Result) ->
+    ok.
 
--spec reset_failures(pid()) -> ok.
-reset_failures(GuildPid) ->
-    case safe_lookup(GuildPid) of
-        [{_, State}] ->
-            safe_insert(GuildPid, State#{failures => 0}),
-            ok;
-        [] ->
-            ok
-    end.
+-spec pid_trace(pid()) -> map().
+pid_trace(GuildPid) ->
+    #{
+        alive => process_liveness:is_alive(GuildPid),
+        current_function => normalize_process_info(process_info(GuildPid, current_function)),
+        registered_name => normalize_process_info(process_info(GuildPid, registered_name)),
+        initial_call => normalize_process_info(process_info(GuildPid, initial_call))
+    }.
 
--spec record_failure(pid()) -> ok.
-record_failure(GuildPid) ->
-    Now = erlang:system_time(millisecond),
-    case safe_lookup(GuildPid) of
-        [] ->
-            safe_insert(GuildPid, #{
-                state => closed,
-                failures => 1,
-                concurrent => 0
-            }),
-            ok;
-        [{_, #{failures := F} = State}] when F + 1 >= ?FAILURE_THRESHOLD ->
-            safe_insert(GuildPid, State#{
-                state => open,
-                failures => F + 1,
-                opened_at => Now
-            }),
-            ok;
-        [{_, #{failures := F} = State}] ->
-            safe_insert(GuildPid, State#{failures => F + 1}),
-            ok
-    end.
+-spec normalize_process_info(term()) -> term().
+normalize_process_info({_, Value}) -> Value;
+normalize_process_info(undefined) -> undefined;
+normalize_process_info(Value) -> Value.
 
--spec acquire_slot(pid()) -> ok | {error, too_many_requests}.
-acquire_slot(GuildPid) ->
-    case safe_lookup(GuildPid) of
-        [] ->
-            safe_insert(GuildPid, #{
-                state => closed,
-                failures => 0,
-                concurrent => 1
-            }),
-            ok;
-        [{_, #{concurrent := C}}] when C >= ?MAX_CONCURRENT ->
-            {error, too_many_requests};
-        [{_, #{concurrent := C} = State}] ->
-            safe_insert(GuildPid, State#{concurrent => C + 1}),
-            ok
-    end.
+-spec request_trace(map()) -> map().
+request_trace(Request) ->
+    #{
+        user_id => maps:get(user_id, Request, undefined),
+        channel_id => maps:get(channel_id, Request, undefined),
+        session_id => maps:get(session_id, Request, undefined),
+        connection_id => maps:get(connection_id, Request, undefined),
+        self_mute => maps:get(self_mute, Request, undefined),
+        self_deaf => maps:get(self_deaf, Request, undefined),
+        self_video => maps:get(self_video, Request, undefined),
+        self_stream => maps:get(self_stream, Request, undefined)
+    }.
 
--spec release_slot(pid()) -> ok.
-release_slot(GuildPid) ->
-    case safe_lookup(GuildPid) of
-        [{_, #{concurrent := C} = State}] when C > 0 ->
-            safe_insert(GuildPid, State#{concurrent => C - 1}),
-            ok;
-        _ ->
-            ok
-    end.
+-spec normalize_voice_state_update_reply(term()) -> voice_state_update_result().
+normalize_voice_state_update_reply(#{success := false, ack := Ack} = Response) when
+    is_map(Ack)
+->
+    {ok, require_rejection_response(Response)};
+normalize_voice_state_update_reply(Response) when is_map(Response) ->
+    case maps:get(success, Response, false) of
+        true -> {ok, require_success_response(Response)};
+        false -> {error, unknown, internal_error}
+    end;
+normalize_voice_state_update_reply({ok, Response}) when is_map(Response) ->
+    normalize_voice_state_update_reply(Response);
+normalize_voice_state_update_reply({error, Category, ErrorAtom}) when
+    is_atom(Category), is_atom(ErrorAtom)
+->
+    {error, Category, ErrorAtom};
+normalize_voice_state_update_reply({error, {Category, ErrorAtom}}) when
+    is_atom(Category), is_atom(ErrorAtom)
+->
+    {error, Category, ErrorAtom};
+normalize_voice_state_update_reply({error, timeout}) ->
+    {error, timeout};
+normalize_voice_state_update_reply({error, noproc}) ->
+    {error, noproc};
+normalize_voice_state_update_reply({error, ErrorAtom}) when is_atom(ErrorAtom) ->
+    {error, unknown, ErrorAtom};
+normalize_voice_state_update_reply(ok) ->
+    {error, unknown, internal_error};
+normalize_voice_state_update_reply(_) ->
+    {error, unknown, internal_error}.
 
--spec safe_insert(pid(), map()) -> ok.
-safe_insert(GuildPid, State) ->
-    ensure_table(),
-    try ets:insert(?CIRCUIT_BREAKER_TABLE, {GuildPid, State}) of
-        true -> ok
-    catch
-        error:badarg ->
-            ensure_table(),
-            try ets:insert(?CIRCUIT_BREAKER_TABLE, {GuildPid, State}) of
-                true -> ok
-            catch
-                error:badarg -> ok
-            end
-    end.
+-spec require_success_response(map()) -> voice_state_update_success().
+require_success_response(#{success := true} = Response) ->
+    Response.
 
--spec safe_delete(pid()) -> ok.
-safe_delete(GuildPid) ->
-    ensure_table(),
-    try ets:delete(?CIRCUIT_BREAKER_TABLE, GuildPid) of
-        true -> ok
-    catch
-        error:badarg -> ok
-    end.
-
--spec safe_lookup(pid()) -> list().
-safe_lookup(GuildPid) ->
-    try ets:lookup(?CIRCUIT_BREAKER_TABLE, GuildPid) of
-        Result -> Result
-    catch
-        error:badarg -> []
-    end.
-
--spec ensure_table() -> ok.
-ensure_table() ->
-    guild_ets_utils:ensure_table(?CIRCUIT_BREAKER_TABLE, [
-        named_table,
-        public,
-        set,
-        {read_concurrency, true},
-        {write_concurrency, true}
-    ]).
+-spec require_rejection_response(map()) -> voice_state_update_rejection().
+require_rejection_response(#{success := false, ack := Ack} = Response) when is_map(Ack) ->
+    Response.
 
 -ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
 
 module_exports_test() ->
     Exports = guild_client:module_info(exports),
     ?assert(lists:member({voice_state_update, 3}, Exports)).
 
-ensure_table_creates_table_test() ->
-    catch ets:delete(?CIRCUIT_BREAKER_TABLE),
-    ?assertEqual(undefined, ets:whereis(?CIRCUIT_BREAKER_TABLE)),
-    ensure_table(),
-    ?assertNotEqual(undefined, ets:whereis(?CIRCUIT_BREAKER_TABLE)).
+do_call_ok_reply_returns_error_test() ->
+    Pid = start_test_call_server(ok),
+    ?assertEqual({error, unknown, internal_error}, do_call(Pid, #{}, 1000)),
+    stop_test_call_server(Pid).
 
-ensure_table_idempotent_test() ->
-    ensure_table(),
-    ensure_table(),
-    ?assertNotEqual(undefined, ets:whereis(?CIRCUIT_BREAKER_TABLE)).
+do_call_success_map_reply_returns_ok_test() ->
+    Reply = #{success => true, token => <<"abc">>},
+    Pid = start_test_call_server(Reply),
+    ?assertEqual({ok, Reply}, do_call(Pid, #{}, 1000)),
+    stop_test_call_server(Pid).
 
-acquire_slot_creates_entry_test() ->
-    ensure_table(),
-    Pid = spawn(fun() ->
-        receive
-            done -> ok
-        end
-    end),
-    ets:delete_all_objects(?CIRCUIT_BREAKER_TABLE),
-    ?assertEqual(ok, acquire_slot(Pid)),
-    [{Pid, State}] = ets:lookup(?CIRCUIT_BREAKER_TABLE, Pid),
-    ?assertEqual(1, maps:get(concurrent, State)),
-    Pid ! done.
+do_call_rejected_ack_map_reply_returns_ok_test() ->
+    Reply = #{success => false, ack => #{<<"status">> => <<"rejected">>}},
+    Pid = start_test_call_server(Reply),
+    ?assertEqual({ok, Reply}, do_call(Pid, #{}, 1000)),
+    stop_test_call_server(Pid).
 
-acquire_slot_increments_test() ->
-    ensure_table(),
-    Pid = spawn(fun() ->
-        receive
-            done -> ok
-        end
-    end),
-    ets:delete_all_objects(?CIRCUIT_BREAKER_TABLE),
-    acquire_slot(Pid),
-    acquire_slot(Pid),
-    [{Pid, State}] = ets:lookup(?CIRCUIT_BREAKER_TABLE, Pid),
-    ?assertEqual(2, maps:get(concurrent, State)),
-    Pid ! done.
+do_call_error_tuple_reply_passthrough_test() ->
+    Reply = {error, validation_error, voice_member_not_found},
+    Pid = start_test_call_server(Reply),
+    ?assertEqual(Reply, do_call(Pid, #{}, 1000)),
+    stop_test_call_server(Pid).
 
-release_slot_decrements_test() ->
-    ensure_table(),
-    Pid = spawn(fun() ->
-        receive
-            done -> ok
-        end
-    end),
-    ets:delete_all_objects(?CIRCUIT_BREAKER_TABLE),
-    acquire_slot(Pid),
-    acquire_slot(Pid),
-    release_slot(Pid),
-    [{Pid, State}] = ets:lookup(?CIRCUIT_BREAKER_TABLE, Pid),
-    ?assertEqual(1, maps:get(concurrent, State)),
-    Pid ! done.
+do_call_nested_error_tuple_reply_passthrough_test() ->
+    Reply = {error, {validation_error, voice_member_not_found}},
+    Pid = start_test_call_server(Reply),
+    ?assertEqual({error, validation_error, voice_member_not_found}, do_call(Pid, #{}, 1000)),
+    stop_test_call_server(Pid).
 
-get_circuit_state_closed_test() ->
-    ensure_table(),
-    Pid = spawn(fun() ->
-        receive
-            done -> ok
-        end
-    end),
-    ets:delete_all_objects(?CIRCUIT_BREAKER_TABLE),
-    ?assertEqual(closed, get_circuit_state(Pid)),
-    Pid ! done.
+do_call_not_owner_error_tuple_reply_normalized_test() ->
+    Reply = {error, {not_owner, 'fluxer_gateway@127.0.0.1'}},
+    Pid = start_test_call_server(Reply),
+    ?assertEqual({error, not_owner, 'fluxer_gateway@127.0.0.1'}, do_call(Pid, #{}, 1000)),
+    stop_test_call_server(Pid).
 
-get_circuit_state_open_test() ->
-    ensure_table(),
-    Pid = spawn(fun() ->
-        receive
-            done -> ok
-        end
-    end),
-    ets:delete_all_objects(?CIRCUIT_BREAKER_TABLE),
-    Now = erlang:system_time(millisecond),
-    ets:insert(
-        ?CIRCUIT_BREAKER_TABLE,
-        {Pid, #{
-            state => open,
-            failures => 5,
-            concurrent => 0,
-            opened_at => Now
-        }}
-    ),
-    ?assertEqual(open, get_circuit_state(Pid)),
-    Pid ! done.
+-spec start_test_call_server(term()) -> pid().
+start_test_call_server(Reply) ->
+    spawn(fun() -> test_call_server_loop(Reply) end).
 
-get_circuit_state_half_open_test() ->
-    ensure_table(),
-    Pid = spawn(fun() ->
-        receive
-            done -> ok
-        end
-    end),
-    ets:delete_all_objects(?CIRCUIT_BREAKER_TABLE),
-    OldTime = erlang:system_time(millisecond) - ?RECOVERY_TIMEOUT_MS - 1000,
-    ets:insert(
-        ?CIRCUIT_BREAKER_TABLE,
-        {Pid, #{
-            state => open,
-            failures => 5,
-            concurrent => 0,
-            opened_at => OldTime
-        }}
-    ),
-    ?assertEqual(half_open, get_circuit_state(Pid)),
-    Pid ! done.
+-spec stop_test_call_server(pid()) -> ok.
+stop_test_call_server(Pid) ->
+    Pid ! stop,
+    ok.
 
-record_failure_opens_circuit_test() ->
-    ensure_table(),
-    Pid = spawn(fun() ->
-        receive
-            done -> ok
-        end
-    end),
-    ets:delete_all_objects(?CIRCUIT_BREAKER_TABLE),
-    ets:insert(
-        ?CIRCUIT_BREAKER_TABLE,
-        {Pid, #{
-            state => closed,
-            failures => ?FAILURE_THRESHOLD - 1,
-            concurrent => 0
-        }}
-    ),
-    record_failure(Pid),
-    [{Pid, State}] = ets:lookup(?CIRCUIT_BREAKER_TABLE, Pid),
-    ?assertEqual(open, maps:get(state, State)),
-    Pid ! done.
-
-record_failure_recreates_missing_table_test() ->
-    catch ets:delete(?CIRCUIT_BREAKER_TABLE),
-    Pid = spawn(fun() ->
-        receive
-            done -> ok
-        end
-    end),
-    ?assertEqual(ok, record_failure(Pid)),
-    [{Pid, State}] = ets:lookup(?CIRCUIT_BREAKER_TABLE, Pid),
-    ?assertEqual(1, maps:get(failures, State)),
-    Pid ! done.
-
-is_success_result_test() ->
-    ?assertEqual(true, is_success_result({ok, #{}})),
-    ?assertEqual(false, is_success_result({error, timeout})),
-    ?assertEqual(false, is_success_result({error, noproc})).
+-spec test_call_server_loop(term()) -> ok.
+test_call_server_loop(Reply) ->
+    receive
+        {'$gen_call', From, {voice_state_update, _Request}} ->
+            gen_server:reply(From, Reply),
+            test_call_server_loop(Reply);
+        stop ->
+            ok
+    after 30000 ->
+        ok
+    end.
 
 -endif.

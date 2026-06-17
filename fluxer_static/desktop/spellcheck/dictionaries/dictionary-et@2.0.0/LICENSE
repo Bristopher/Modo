@@ -1,0 +1,14 @@
+dictionary-et@2.0.0 license notice
+
+The upstream package README states:
+
+Dictionary and affix file: LGPL-2.1.
+Rest: MIT (c) Titus Wormer.
+
+Only `index.aff` and `index.dic` are vendored in this directory, so the
+dictionary and affix files are licensed under the GNU Lesser General Public
+License version 2.1.
+
+Source package: https://www.npmjs.com/package/dictionary-et/v/2.0.0
+Upstream source: http://www.meso.ee/~jjpp/speller
+LGPL-2.1 text: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html

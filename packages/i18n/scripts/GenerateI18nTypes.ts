@@ -1,85 +1,57 @@
-/*
- * Copyright (C) 2026 Fluxer Contributors
- *
- * This file is part of Fluxer.
- *
- * Fluxer is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Fluxer is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
- */
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import {parse as parseYaml} from 'yaml';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const ROOT_DIR = path.resolve(__dirname, '../..');
+const REPO_ROOT = path.resolve(__dirname, '../../..');
+const GENERATED_HEADER = '// SPDX-License-Identifier: AGPL-3.0-or-later\n\n';
 
 interface PackageConfig {
 	name: string;
 	localesPath: string;
 	outputFile: string;
 	isEmail?: boolean;
+	staticMessagesModule?: string;
+	staticMessagesExport?: string;
 }
 
 const PACKAGES: Array<PackageConfig> = [
 	{
-		name: '@fluxer/errors',
-		localesPath: path.join(ROOT_DIR, 'errors/src/i18n/locales'),
-		outputFile: path.join(ROOT_DIR, 'errors/src/i18n/ErrorI18nTypes.generated.tsx'),
-	},
-	{
-		name: '@fluxer/email',
-		localesPath: path.join(ROOT_DIR, 'email/src/email_i18n/locales'),
-		outputFile: path.join(ROOT_DIR, 'email/src/email_i18n/EmailI18nTypes.generated.tsx'),
+		name: '@pkgs/email',
+		localesPath: path.join(REPO_ROOT, 'fluxer_api/pkgs/email/src/email_i18n/locales'),
+		outputFile: path.join(REPO_ROOT, 'fluxer_api/pkgs/email/src/email_i18n/EmailI18nTypes.generated.ts'),
 		isEmail: true,
-	},
-	{
-		name: '@fluxer/marketing',
-		localesPath: path.join(ROOT_DIR, 'marketing/src/marketing_i18n/locales'),
-		outputFile: path.join(ROOT_DIR, 'marketing/src/marketing_i18n/MarketingI18nTypes.generated.tsx'),
+		staticMessagesModule: path.join(REPO_ROOT, 'fluxer_api/pkgs/email/src/email_i18n/EmailI18nMessages.ts'),
+		staticMessagesExport: 'EMAIL_I18N_MESSAGES',
 	},
 ];
 
 function extractKeysFromYaml(filePath: string, isEmail = false): Array<string> {
 	const raw = fs.readFileSync(filePath, 'utf8');
 	const parsed = parseYaml(raw) as Record<string, unknown>;
-
 	if (isEmail) {
 		const emailTemplates = parsed as Record<string, {subject: string; body: string}>;
 		return Object.keys(emailTemplates).sort();
 	}
-
 	return Object.keys(parsed).sort();
 }
 
-function generateErrorI18nTypes(keys: Array<string>): string {
-	const licenceHeader = getLicenceHeader();
-	const unionType = keys.map((key) => `\t| '${key}'`).join('\n');
-
-	return `${licenceHeader}
-export type ErrorI18nKey =
-${unionType};
-`;
+async function extractKeysFromStaticMessages(filePath: string, exportName: string): Promise<Array<string>> {
+	const module = await import(pathToFileURL(filePath).href);
+	const messages = module[exportName];
+	if (!messages || typeof messages !== 'object' || Array.isArray(messages)) {
+		throw new Error(`static messages export not found: ${exportName}`);
+	}
+	return Object.keys(messages).sort();
 }
 
 function generateEmailI18nTypes(keys: Array<string>): string {
-	const licenceHeader = getLicenceHeader();
 	const unionType = keys.map((key) => `\t| '${key}'`).join('\n');
-
-	return `${licenceHeader}
-export type EmailTemplateKey =
+	return `export type EmailTemplateKey =
 ${unionType};
 
 export interface EmailTemplate {
@@ -89,76 +61,36 @@ export interface EmailTemplate {
 `;
 }
 
-function generateMarketingI18nTypes(keys: Array<string>): string {
-	const licenceHeader = getLicenceHeader();
-	const unionType = keys.map((key) => `\t| '${key}'`).join('\n');
-
-	return `${licenceHeader}
-export type MarketingI18nKey =
-${unionType};
-`;
-}
-
-function getLicenceHeader(): string {
-	return `/*
- * Copyright (C) 2026 Fluxer Contributors
- *
- * This file is part of Fluxer.
- *
- * Fluxer is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * Fluxer is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
- */
-`;
-}
-
-function generatePackageTypes(config: PackageConfig): void {
+async function generatePackageTypes(config: PackageConfig): Promise<void> {
 	const messagesFile = path.join(config.localesPath, 'messages.yaml');
-
-	if (!fs.existsSync(messagesFile)) {
+	if (!config.staticMessagesModule && !fs.existsSync(messagesFile)) {
 		console.error(`messages file not found: ${messagesFile}`);
 		process.exit(1);
 	}
-
-	const keys = extractKeysFromYaml(messagesFile, config.isEmail);
-
+	const keys =
+		config.staticMessagesModule && config.staticMessagesExport
+			? await extractKeysFromStaticMessages(config.staticMessagesModule, config.staticMessagesExport)
+			: extractKeysFromYaml(messagesFile, config.isEmail);
 	let content: string;
-	if (config.name === '@fluxer/errors') {
-		content = generateErrorI18nTypes(keys);
-	} else if (config.name === '@fluxer/email') {
+	if (config.name === '@pkgs/email') {
 		content = generateEmailI18nTypes(keys);
-	} else if (config.name === '@fluxer/marketing') {
-		content = generateMarketingI18nTypes(keys);
 	} else {
 		throw new Error(`unknown package: ${config.name}`);
 	}
-
 	const outputDir = path.dirname(config.outputFile);
 	if (!fs.existsSync(outputDir)) {
 		fs.mkdirSync(outputDir, {recursive: true});
 	}
-
-	fs.writeFileSync(config.outputFile, content, 'utf8');
+	fs.writeFileSync(config.outputFile, `${GENERATED_HEADER}${content}`, 'utf8');
 	console.log(`generated types for ${config.name} (${keys.length} keys) -> ${config.outputFile}`);
 }
 
-function main(): void {
+async function main(): Promise<void> {
 	console.log('generating i18n types...\n');
-
 	for (const config of PACKAGES) {
-		generatePackageTypes(config);
+		await generatePackageTypes(config);
 	}
-
 	console.log('\nall i18n types generated successfully!');
 }
 
-main();
+await main();

@@ -1,23 +1,11 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(presence_payload).
+-typing([eqwalizer]).
 
 -export([build/5]).
+
+-export_type([status/0, custom_status/0]).
 
 -type status() :: online | offline | idle | dnd | invisible | binary().
 -type custom_status() :: map() | null.
@@ -33,7 +21,7 @@ build(UserData, Status, Mobile, Afk, CustomStatus) ->
         <<"custom_status">> => custom_status_for(StatusBin, CustomStatus)
     }.
 
--spec ensure_status_binary(status()) -> binary().
+-spec ensure_status_binary(term()) -> binary().
 ensure_status_binary(online) -> <<"online">>;
 ensure_status_binary(offline) -> <<"offline">>;
 ensure_status_binary(idle) -> <<"idle">>;
@@ -44,23 +32,14 @@ ensure_status_binary(Status) when is_binary(Status) -> Status;
 ensure_status_binary(_) -> <<"offline">>.
 
 -spec custom_status_for(binary(), custom_status()) -> custom_status().
-custom_status_for(StatusBin, CustomStatus) ->
-    case StatusBin of
-        <<"offline">> ->
-            null;
-        <<"invisible">> ->
-            null;
-        _ ->
-            normalize_custom_status(CustomStatus)
-    end.
+custom_status_for(<<"offline">>, _CustomStatus) -> null;
+custom_status_for(<<"invisible">>, _CustomStatus) -> null;
+custom_status_for(_StatusBin, CustomStatus) -> normalize_custom_status(CustomStatus).
 
 -spec normalize_custom_status(term()) -> custom_status().
-normalize_custom_status(null) ->
-    null;
-normalize_custom_status(CustomStatus) when is_map(CustomStatus) ->
-    CustomStatus;
-normalize_custom_status(_) ->
-    null.
+normalize_custom_status(null) -> null;
+normalize_custom_status(CustomStatus) when is_map(CustomStatus) -> CustomStatus;
+normalize_custom_status(_) -> null.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

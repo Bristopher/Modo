@@ -1,5 +1,5 @@
-# Security Policy
+# Security
 
-Please **do not** report security vulnerabilities via public GitHub issues.
+Please report security issues through the Fluxer security page:
 
-Report security issues here: https://fluxer.app/security
+https://fluxer.app/security

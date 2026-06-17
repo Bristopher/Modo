@@ -1,33 +1,23 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(snowflake_util).
+-typing([eqwalizer]).
 
 -export([extract_timestamp/1]).
 
 -define(FLUXER_EPOCH, 1420070400000).
 -define(TIMESTAMP_SHIFT, 22).
 
--spec extract_timestamp(binary() | integer()) -> integer().
-extract_timestamp(SnowflakeBin) when is_binary(SnowflakeBin) ->
-    Snowflake = binary_to_integer(SnowflakeBin),
-    extract_timestamp(Snowflake);
-extract_timestamp(Snowflake) when is_integer(Snowflake) ->
-    (Snowflake bsr ?TIMESTAMP_SHIFT) + ?FLUXER_EPOCH.
+-spec extract_timestamp(term()) -> integer() | undefined.
+extract_timestamp(SnowflakeValue) ->
+    try snowflake_id:parse_optional(SnowflakeValue) of
+        Snowflake when is_integer(Snowflake), Snowflake > 0 ->
+            (Snowflake bsr ?TIMESTAMP_SHIFT) + ?FLUXER_EPOCH;
+        undefined ->
+            undefined
+    catch
+        error:{invalid_snowflake, _} -> undefined
+    end.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -52,5 +42,13 @@ extract_timestamp_with_worker_and_sequence_test() ->
     Sequence = 100,
     Snowflake = (RelativeTs bsl ?TIMESTAMP_SHIFT) bor (WorkerId bsl 12) bor Sequence,
     ?assertEqual(Timestamp, extract_timestamp(Snowflake)).
+
+extract_timestamp_rejects_malformed_snowflake_test() ->
+    ?assertEqual(undefined, extract_timestamp(0)),
+    ?assertEqual(undefined, extract_timestamp(<<"0">>)),
+    ?assertEqual(undefined, extract_timestamp(<<"001">>)),
+    ?assertEqual(undefined, extract_timestamp(<<"-1">>)),
+    ?assertEqual(undefined, extract_timestamp(<<"not_a_snowflake">>)),
+    ?assertEqual(undefined, extract_timestamp(-1)).
 
 -endif.

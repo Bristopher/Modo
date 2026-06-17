@@ -1,0 +1,190 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+const KEYCODE_TABLE: &[(u16, &str)] = &[
+    (0x35, "Escape"),
+    (0x7a, "F1"),
+    (0x78, "F2"),
+    (0x63, "F3"),
+    (0x76, "F4"),
+    (0x60, "F5"),
+    (0x61, "F6"),
+    (0x62, "F7"),
+    (0x64, "F8"),
+    (0x65, "F9"),
+    (0x6d, "F10"),
+    (0x67, "F11"),
+    (0x6f, "F12"),
+    (0x69, "F13"),
+    (0x6b, "F14"),
+    (0x71, "F15"),
+    (0x6a, "F16"),
+    (0x40, "F17"),
+    (0x4f, "F18"),
+    (0x50, "F19"),
+    (0x5a, "F20"),
+    (0x32, "Backquote"),
+    (0x12, "1"),
+    (0x13, "2"),
+    (0x14, "3"),
+    (0x15, "4"),
+    (0x17, "5"),
+    (0x16, "6"),
+    (0x1a, "7"),
+    (0x1c, "8"),
+    (0x19, "9"),
+    (0x1d, "0"),
+    (0x1b, "Minus"),
+    (0x18, "Equal"),
+    (0x33, "Backspace"),
+    (0x30, "Tab"),
+    (0x0c, "Q"),
+    (0x0d, "W"),
+    (0x0e, "E"),
+    (0x0f, "R"),
+    (0x11, "T"),
+    (0x10, "Y"),
+    (0x20, "U"),
+    (0x22, "I"),
+    (0x1f, "O"),
+    (0x23, "P"),
+    (0x21, "BracketLeft"),
+    (0x1e, "BracketRight"),
+    (0x2a, "Backslash"),
+    (0x0a, "IntlBackslash"),
+    (0x39, "CapsLock"),
+    (0x00, "A"),
+    (0x01, "S"),
+    (0x02, "D"),
+    (0x03, "F"),
+    (0x05, "G"),
+    (0x04, "H"),
+    (0x26, "J"),
+    (0x28, "K"),
+    (0x25, "L"),
+    (0x29, "Semicolon"),
+    (0x27, "Quote"),
+    (0x24, "Enter"),
+    (0x38, "ShiftLeft"),
+    (0x06, "Z"),
+    (0x07, "X"),
+    (0x08, "C"),
+    (0x09, "V"),
+    (0x0b, "B"),
+    (0x2d, "N"),
+    (0x2e, "M"),
+    (0x2b, "Comma"),
+    (0x2f, "Period"),
+    (0x2c, "Slash"),
+    (0x3c, "ShiftRight"),
+    (0x3b, "ControlLeft"),
+    (0x37, "MetaLeft"),
+    (0x3a, "AltLeft"),
+    (0x31, "Space"),
+    (0x3d, "AltRight"),
+    (0x36, "MetaRight"),
+    (0x3e, "ControlRight"),
+    (0x41, "NumpadDecimal"),
+    (0x43, "NumpadMultiply"),
+    (0x45, "NumpadAdd"),
+    (0x47, "NumLock"),
+    (0x4b, "NumpadDivide"),
+    (0x4c, "NumpadEnter"),
+    (0x4e, "NumpadSubtract"),
+    (0x51, "NumpadEqual"),
+    (0x52, "Numpad0"),
+    (0x53, "Numpad1"),
+    (0x54, "Numpad2"),
+    (0x55, "Numpad3"),
+    (0x56, "Numpad4"),
+    (0x57, "Numpad5"),
+    (0x58, "Numpad6"),
+    (0x59, "Numpad7"),
+    (0x5b, "Numpad8"),
+    (0x5c, "Numpad9"),
+    (0x5d, "IntlYen"),
+    (0x5e, "IntlRo"),
+    (0x5f, "NumpadComma"),
+    (0x66, "Lang2"),
+    (0x68, "Lang1"),
+    (0x7b, "ArrowLeft"),
+    (0x7e, "ArrowUp"),
+    (0x7c, "ArrowRight"),
+    (0x7d, "ArrowDown"),
+    (0x72, "Insert"),
+    (0x75, "Delete"),
+    (0x73, "Home"),
+    (0x77, "End"),
+    (0x74, "PageUp"),
+    (0x79, "PageDown"),
+];
+
+pub fn keycode_to_name(keycode: u16) -> Option<&'static str> {
+    KEYCODE_TABLE
+        .iter()
+        .find(|(code, _)| *code == keycode)
+        .map(|(_, name)| *name)
+}
+
+pub fn keycode_name_or_fallback(keycode: u16) -> String {
+    match keycode_to_name(keycode) {
+        Some(name) => name.to_owned(),
+        None => format!("Key{keycode}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn letters_use_apple_hid_positions() {
+        assert_eq!(Some("A"), keycode_to_name(0x00));
+        assert_eq!(Some("Z"), keycode_to_name(0x06));
+        assert_eq!(Some("M"), keycode_to_name(0x2e));
+    }
+
+    #[test]
+    fn caps_lock_maps_to_dom_style_name() {
+        assert_eq!(Some("CapsLock"), keycode_to_name(0x39));
+        assert_eq!("CapsLock", keycode_name_or_fallback(0x39));
+    }
+
+    #[test]
+    fn modifiers_map_to_side_distinguished_names() {
+        assert_eq!(Some("ShiftLeft"), keycode_to_name(0x38));
+        assert_eq!(Some("ShiftRight"), keycode_to_name(0x3c));
+        assert_eq!(Some("MetaLeft"), keycode_to_name(0x37));
+        assert_eq!(Some("AltLeft"), keycode_to_name(0x3a));
+    }
+
+    #[test]
+    fn function_keys_cover_f1_through_f20() {
+        assert_eq!(Some("F1"), keycode_to_name(0x7a));
+        assert_eq!(Some("F12"), keycode_to_name(0x6f));
+        assert_eq!(Some("F13"), keycode_to_name(0x69));
+        assert_eq!(Some("F20"), keycode_to_name(0x5a));
+    }
+
+    #[test]
+    fn numpad_and_international_keys_map() {
+        assert_eq!(Some("Numpad0"), keycode_to_name(0x52));
+        assert_eq!(Some("NumpadEnter"), keycode_to_name(0x4c));
+        assert_eq!(Some("NumpadEqual"), keycode_to_name(0x51));
+        assert_eq!(Some("NumLock"), keycode_to_name(0x47));
+        assert_eq!(Some("IntlYen"), keycode_to_name(0x5d));
+        assert_eq!(Some("Lang1"), keycode_to_name(0x68));
+    }
+
+    #[test]
+    fn arrows_and_editing_keys_map() {
+        assert_eq!(Some("ArrowLeft"), keycode_to_name(0x7b));
+        assert_eq!(Some("ArrowDown"), keycode_to_name(0x7d));
+        assert_eq!(Some("Delete"), keycode_to_name(0x75));
+    }
+
+    #[test]
+    fn unknown_keycode_falls_back_to_key_n() {
+        assert_eq!(None, keycode_to_name(0xfff));
+        assert_eq!("Key291", keycode_name_or_fallback(0x123));
+    }
+}

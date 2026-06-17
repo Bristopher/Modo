@@ -1,21 +1,7 @@
-%% Copyright (C) 2026 Fluxer Contributors
-%%
-%% This file is part of Fluxer.
-%%
-%% Fluxer is free software: you can redistribute it and/or modify
-%% it under the terms of the GNU Affero General Public License as published by
-%% the Free Software Foundation, either version 3 of the License, or
-%% (at your option) any later version.
-%%
-%% Fluxer is distributed in the hope that it will be useful,
-%% but WITHOUT ANY WARRANTY; without even the implied warranty of
-%% MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-%% GNU Affero General Public License for more details.
-%%
-%% You should have received a copy of the GNU Affero General Public License
-%% along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
+%% SPDX-License-Identifier: AGPL-3.0-or-later
 
 -module(guild_manager).
+-typing([eqwalizer]).
 -behaviour(gen_server).
 
 -include_lib("fluxer_gateway/include/timeout_config.hrl").
@@ -27,21 +13,26 @@
     lookup/1,
     lookup/2,
     ensure_started/1,
-    ensure_started/2
+    ensure_started/2,
+    local_guild_count/0,
+    local_guild_ids/0,
+    handoff_for_drain/0,
+    handoff_to_target/1,
+    handoff_to_topology/1,
+    call_via_manager/2,
+    call_via_manager_local/2
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--define(GUILD_PID_CACHE, guild_pid_cache).
--define(SHARD_TABLE, guild_manager_shard_table).
-
 -type guild_id() :: integer().
 -type shard_map() :: #{pid := pid(), ref := reference()}.
+-type handoff_result() :: #{attempted := non_neg_integer(), handed_off := non_neg_integer()}.
 -type state() :: #{
     shards := #{non_neg_integer() => shard_map()},
     shard_count := pos_integer()
 }.
 
--spec start_link() -> {ok, pid()} | {error, term()}.
+-spec start_link() -> gen_server:start_ret().
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
@@ -51,7 +42,7 @@ start_or_lookup(GuildId) ->
 
 -spec start_or_lookup(guild_id(), pos_integer()) -> {ok, pid()} | {error, term()}.
 start_or_lookup(GuildId, Timeout) ->
-    call_shard(GuildId, {start_or_lookup, GuildId}, Timeout).
+    normalize_pid_reply(call_via_manager({start_or_lookup, GuildId}, Timeout)).
 
 -spec lookup(guild_id()) -> {ok, pid()} | {error, term()}.
 lookup(GuildId) ->
@@ -59,12 +50,7 @@ lookup(GuildId) ->
 
 -spec lookup(guild_id(), pos_integer()) -> {ok, pid()} | {error, term()}.
 lookup(GuildId, Timeout) ->
-    case lookup_cached_guild_pid(GuildId) of
-        {ok, GuildPid} ->
-            {ok, GuildPid};
-        not_found ->
-            call_shard(GuildId, {lookup, GuildId}, Timeout)
-    end.
+    normalize_pid_reply(call_via_manager({lookup, GuildId}, Timeout)).
 
 -spec ensure_started(guild_id()) -> ok | {error, term()}.
 ensure_started(GuildId) ->
@@ -72,81 +58,265 @@ ensure_started(GuildId) ->
 
 -spec ensure_started(guild_id(), pos_integer()) -> ok | {error, term()}.
 ensure_started(GuildId, Timeout) ->
-    case call_shard(GuildId, {ensure_started, GuildId}, Timeout) of
-        ok ->
-            ok;
-        {ok, GuildPid} when is_pid(GuildPid) ->
-            ets:insert(?GUILD_PID_CACHE, {GuildId, GuildPid}),
-            ok;
-        {error, _} = Error ->
-            Error;
-        _ ->
-            {error, unavailable}
+    normalize_ensure_started(call_via_manager({ensure_started, GuildId}, Timeout), GuildId).
+
+-spec local_guild_count() -> non_neg_integer().
+local_guild_count() ->
+    case call_via_manager_local(get_local_count, ?DEFAULT_GEN_SERVER_TIMEOUT) of
+        {ok, Count} when is_integer(Count), Count >= 0 -> Count;
+        Count when is_integer(Count), Count >= 0 -> Count;
+        {error, Reason} -> error({guild_count_unavailable, Reason});
+        Other -> error({unexpected_guild_count_reply, Other})
     end.
 
--spec init(list()) -> {ok, state()}.
+-spec local_guild_ids() -> [integer()].
+local_guild_ids() ->
+    case call_via_manager_local(list_local_guild_ids, ?DEFAULT_GEN_SERVER_TIMEOUT) of
+        {ok, Ids} when is_list(Ids) -> require_guild_ids(Ids);
+        {error, Reason} -> error({guild_ids_unavailable, Reason});
+        Other -> error({unexpected_guild_ids_reply, Other})
+    end.
+
+-spec handoff_for_drain() -> handoff_result() | {error, term()}.
+handoff_for_drain() ->
+    normalize_handoff_result(
+        call_via_manager_local(handoff_for_drain, ?DEFAULT_GEN_SERVER_TIMEOUT)
+    ).
+
+-spec handoff_to_target(node()) -> handoff_result() | {error, term()}.
+handoff_to_target(TargetNode) ->
+    Request = {handoff_to_target, TargetNode},
+    normalize_handoff_result(call_via_manager_local(Request, ?DEFAULT_GEN_SERVER_TIMEOUT)).
+
+-spec handoff_to_topology([node()]) -> handoff_result() | {error, term()}.
+handoff_to_topology(TargetNodes) ->
+    Request = {handoff_to_topology, TargetNodes},
+    normalize_handoff_result(call_via_manager_local(Request, ?DEFAULT_GEN_SERVER_TIMEOUT)).
+
+-spec call_via_manager(term(), pos_integer()) -> term().
+call_via_manager(Request, Timeout) ->
+    guild_manager_router:call_via_manager(Request, Timeout).
+
+-spec call_via_manager_local(term(), pos_integer()) -> term().
+call_via_manager_local(Request, Timeout) ->
+    guild_manager_router:call_via_manager_local(Request, Timeout).
+
+-spec init(list()) -> {ok, state(), hibernate}.
 init([]) ->
     process_flag(trap_exit, true),
-    ensure_shard_table(),
-    ets:new(?GUILD_PID_CACHE, [named_table, public, set, {read_concurrency, true}]),
-    {ShardCount, _Source} = determine_shard_count(),
-    ShardMap = start_shards(ShardCount),
+    erlang:process_flag(fullsweep_after, 0),
+    process_registry:init(),
+    guild_manager_cache:ensure_tables(),
+    {ShardCount, _Source} = guild_manager_shards:determine_shard_count(),
+    ShardMap = guild_manager_shards:start_shards(ShardCount),
     State = #{shards => ShardMap, shard_count => ShardCount},
-    sync_shard_table(State),
-    {ok, State}.
+    guild_manager_cache:sync_shard_table(State),
+    {ok, State, hibernate}.
 
--spec handle_call(term(), gen_server:from(), state()) -> {reply, term(), state()}.
-handle_call({start_or_lookup, GuildId}, _From, State) ->
-    {Reply, NewState} = forward_call(GuildId, {start_or_lookup, GuildId}, State),
+-spec handle_call(term(), gen_server:from(), state()) ->
+    {reply, term(), state()} | {noreply, state()}.
+handle_call({with_timeout, Request, Timeout}, From, State) ->
+    handle_timed_call(Request, require_timeout(Timeout), From, State);
+handle_call(Request, From, State) ->
+    handle_plain_call(Request, From, State).
+
+-spec handle_plain_call(term(), gen_server:from(), state()) ->
+    {reply, term(), state()} | {noreply, state()}.
+handle_plain_call({start_or_lookup, GuildId}, From, State) ->
+    forward_guild_call(start_or_lookup, GuildId, From, State);
+handle_plain_call({lookup, GuildId}, From, State) ->
+    forward_guild_call(lookup, GuildId, From, State);
+handle_plain_call({ensure_started, GuildId}, From, State) ->
+    forward_guild_call(ensure_started, GuildId, From, State);
+handle_plain_call({start_transferred, GuildId, TransferState}, From, State) ->
+    forward_start_transferred(GuildId, TransferState, From, State);
+handle_plain_call({stop_guild, GuildId}, From, State) ->
+    forward_guild_call(stop_guild, GuildId, From, State);
+handle_plain_call({reload_guild, GuildId}, From, State) ->
+    forward_guild_call(reload_guild, GuildId, From, State);
+handle_plain_call({shutdown_guild, GuildId}, From, State) ->
+    forward_guild_call(shutdown_guild, GuildId, From, State);
+handle_plain_call(Request, _From, State) ->
+    handle_manager_call(Request, State).
+
+-spec handle_manager_call(term(), state()) -> {reply, term(), state()}.
+handle_manager_call({reload_all_guilds, GuildIds}, State) ->
+    {Reply, NewState} = guild_manager_router:handle_reload_all(
+        require_guild_ids(GuildIds), State
+    ),
     {reply, Reply, NewState};
-handle_call({lookup, GuildId}, _From, State) ->
-    {Reply, NewState} = forward_call(GuildId, {lookup, GuildId}, State),
+handle_manager_call(get_local_count, State) ->
+    {Reply, NewState} = guild_manager_router:aggregate_counts(get_local_count, State),
     {reply, Reply, NewState};
-handle_call({ensure_started, GuildId}, _From, State) ->
-    {Reply, NewState} = forward_call(GuildId, {ensure_started, GuildId}, State),
+handle_manager_call(list_local_guild_ids, State) ->
+    {reply, {ok, guild_manager_handoff:collect_local_guild_ids(State)}, State};
+handle_manager_call(get_global_count, State) ->
+    {Reply, NewState} = guild_manager_router:aggregate_counts(get_global_count, State),
     {reply, Reply, NewState};
-handle_call({stop_guild, GuildId}, _From, State) ->
-    {Reply, NewState} = forward_call(GuildId, {stop_guild, GuildId}, State),
-    {reply, Reply, NewState};
-handle_call({reload_guild, GuildId}, _From, State) ->
-    {Reply, NewState} = forward_call(GuildId, {reload_guild, GuildId}, State),
-    {reply, Reply, NewState};
-handle_call({shutdown_guild, GuildId}, _From, State) ->
-    {Reply, NewState} = forward_call(GuildId, {shutdown_guild, GuildId}, State),
-    {reply, Reply, NewState};
-handle_call({reload_all_guilds, GuildIds}, _From, State) ->
-    {Reply, NewState} = handle_reload_all(GuildIds, State),
-    {reply, Reply, NewState};
-handle_call(get_local_count, _From, State) ->
-    {Count, NewState} = aggregate_counts(get_local_count, State),
-    {reply, {ok, Count}, NewState};
-handle_call(get_global_count, _From, State) ->
-    {Count, NewState} = aggregate_counts(get_global_count, State),
-    {reply, {ok, Count}, NewState};
-handle_call(_Request, _From, State) ->
+handle_manager_call(handoff_for_drain, State) ->
+    {Result, NewState} = guild_manager_handoff:perform_handoff_for_drain(State),
+    {reply, Result, NewState};
+handle_manager_call({handoff_to_target, TargetNode}, State) ->
+    {Result, NewState} = guild_manager_handoff:perform_handoff_to_target(
+        require_node(TargetNode), State
+    ),
+    {reply, Result, NewState};
+handle_manager_call({handoff_to_topology, TargetNodes}, State) ->
+    {Result, NewState} = guild_manager_handoff:perform_handoff_to_topology(
+        require_nodes(TargetNodes), State
+    ),
+    {reply, Result, NewState};
+handle_manager_call(_Request, State) ->
     {reply, ok, State}.
 
+-spec handle_timed_call(term(), pos_integer(), gen_server:from(), state()) ->
+    {reply, term(), state()} | {noreply, state()}.
+handle_timed_call(Request, Timeout, From, State) ->
+    handle_timed_forward_call(Request, Timeout, From, State).
+
+-spec handle_timed_forward_call(term(), pos_integer(), gen_server:from(), state()) ->
+    {reply, term(), state()} | {noreply, state()}.
+handle_timed_forward_call({start_or_lookup, GuildId}, Timeout, From, State) ->
+    forward_timed_guild_call(start_or_lookup, GuildId, Timeout, From, State);
+handle_timed_forward_call({lookup, GuildId}, Timeout, From, State) ->
+    forward_timed_guild_call(lookup, GuildId, Timeout, From, State);
+handle_timed_forward_call({ensure_started, GuildId}, Timeout, From, State) ->
+    forward_timed_guild_call(ensure_started, GuildId, Timeout, From, State);
+handle_timed_forward_call({start_transferred, GuildId, TransferState}, Timeout, From, State) ->
+    forward_timed_start_transferred(GuildId, TransferState, Timeout, From, State);
+handle_timed_forward_call({stop_guild, GuildId}, Timeout, From, State) ->
+    forward_timed_guild_call(stop_guild, GuildId, Timeout, From, State);
+handle_timed_forward_call({reload_guild, GuildId}, Timeout, From, State) ->
+    forward_timed_guild_call(reload_guild, GuildId, Timeout, From, State);
+handle_timed_forward_call({shutdown_guild, GuildId}, Timeout, From, State) ->
+    forward_timed_guild_call(shutdown_guild, GuildId, Timeout, From, State);
+handle_timed_forward_call(Request, Timeout, From, State) ->
+    handle_timed_manager_call(Request, Timeout, From, State).
+
+-spec handle_timed_manager_call(term(), pos_integer(), gen_server:from(), state()) ->
+    {reply, term(), state()} | {noreply, state()}.
+handle_timed_manager_call({reload_all_guilds, GuildIds}, _Timeout, _From, State) ->
+    {Reply, NewState} = guild_manager_router:handle_reload_all(
+        require_guild_ids(GuildIds), State
+    ),
+    {reply, Reply, NewState};
+handle_timed_manager_call(get_local_count, _Timeout, _From, State) ->
+    {Reply, NewState} = guild_manager_router:aggregate_counts(get_local_count, State),
+    {reply, Reply, NewState};
+handle_timed_manager_call(list_local_guild_ids, _Timeout, _From, State) ->
+    {reply, {ok, guild_manager_handoff:collect_local_guild_ids(State)}, State};
+handle_timed_manager_call(get_global_count, _Timeout, _From, State) ->
+    {Reply, NewState} = guild_manager_router:aggregate_counts(get_global_count, State),
+    {reply, Reply, NewState};
+handle_timed_manager_call(handoff_for_drain, _Timeout, From, State) ->
+    async_handoff_reply(
+        self(),
+        From,
+        fun() -> guild_manager_handoff:perform_handoff_for_drain(State) end
+    ),
+    {noreply, State};
+handle_timed_manager_call({handoff_to_target, TargetNode}, _Timeout, From, State) ->
+    Target = require_node(TargetNode),
+    async_handoff_reply(
+        self(),
+        From,
+        fun() -> guild_manager_handoff:perform_handoff_to_target(Target, State) end
+    ),
+    {noreply, State};
+handle_timed_manager_call({handoff_to_topology, TargetNodes}, _Timeout, From, State) ->
+    Targets = require_nodes(TargetNodes),
+    async_handoff_reply(
+        self(),
+        From,
+        fun() -> guild_manager_handoff:perform_handoff_to_topology(Targets, State) end
+    ),
+    {noreply, State};
+handle_timed_manager_call(Request, _Timeout, _From, State) ->
+    {reply, {error, {unsupported_timed_call, Request}}, State}.
+
+-spec async_handoff_reply(pid(), gen_server:from(), fun(() -> {term(), state()})) -> ok.
+async_handoff_reply(Manager, From, Fun) ->
+    proc_lib:spawn(fun() ->
+        erlang:process_flag(fullsweep_after, 0),
+        Reply = run_async_handoff(Manager, Fun),
+        gen_server:reply(From, Reply)
+    end),
+    ok.
+
+-spec run_async_handoff(pid(), fun(() -> {term(), state()})) -> term().
+run_async_handoff(Manager, Fun) ->
+    try
+        {Result, NewState} = Fun(),
+        sync_handoff_shards(Manager, NewState),
+        Result
+    catch
+        Class:Reason:Stacktrace ->
+            logger:error(
+                "guild_manager_handoff_failed: class=~p reason=~p stacktrace=~p",
+                [Class, Reason, Stacktrace]
+            ),
+            {error, {handoff_failed, Reason}}
+    end.
+
+-spec sync_handoff_shards(pid(), state()) -> ok.
+sync_handoff_shards(Manager, NewState) ->
+    case NewState of
+        #{shards := Shards} when is_map(Shards) ->
+            gen_server:cast(Manager, {handoff_shards_sync, Shards}),
+            ok;
+        _ ->
+            ok
+    end.
+
 -spec handle_cast(term(), state()) -> {noreply, state()}.
+handle_cast({handoff_shards_sync, WorkerShards}, State) when is_map(WorkerShards) ->
+    {noreply, reconcile_handoff_shards(eqwalizer:dynamic_cast(WorkerShards), State)};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+-spec reconcile_handoff_shards(#{non_neg_integer() => shard_map()}, state()) -> state().
+reconcile_handoff_shards(WorkerShards, State) ->
+    Current = maps:get(shards, State),
+    Reconciled = maps:fold(fun adopt_worker_shard/3, Current, WorkerShards),
+    NewState = State#{shards => Reconciled},
+    guild_manager_cache:sync_shard_table(NewState),
+    NewState.
+
+-spec adopt_worker_shard(
+    non_neg_integer(), shard_map(), #{non_neg_integer() => shard_map()}
+) -> #{non_neg_integer() => shard_map()}.
+adopt_worker_shard(Index, WorkerShard, Acc) ->
+    case maps:get(Index, Acc, undefined) of
+        #{pid := Pid} when is_pid(Pid) ->
+            adopt_worker_shard_for_pid(Index, WorkerShard, Acc, Pid);
+        _ ->
+            Acc#{Index => WorkerShard}
+    end.
+
+-spec adopt_worker_shard_for_pid(
+    non_neg_integer(), shard_map(), #{non_neg_integer() => shard_map()}, pid()
+) -> #{non_neg_integer() => shard_map()}.
+adopt_worker_shard_for_pid(Index, WorkerShard, Acc, Pid) ->
+    case process_liveness:is_alive(Pid) of
+        true -> Acc;
+        false -> Acc#{Index => WorkerShard}
+    end.
+
 -spec handle_info(term(), state()) -> {noreply, state()}.
-handle_info({'DOWN', Ref, process, Pid, _Reason}, State) ->
+handle_info({'DOWN', Ref, process, Pid, _Reason}, State) when is_reference(Ref), is_pid(Pid) ->
     Shards = maps:get(shards, State),
-    case find_shard_by_ref(Ref, Shards) of
+    case guild_manager_shards:find_shard_by_ref(Ref, Shards) of
         {ok, Index} ->
-            {_Shard, NewState} = restart_shard(Index, State),
-            {noreply, NewState};
+            restart_manager_shard(Index, State);
         not_found ->
-            cleanup_guild_from_cache(Pid),
+            guild_manager_cache:cleanup_guild_from_cache(Pid),
             {noreply, State}
     end;
-handle_info({'EXIT', Pid, _Reason}, State) ->
+handle_info({'EXIT', Pid, _Reason}, State) when is_pid(Pid) ->
     Shards = maps:get(shards, State),
-    case find_shard_by_pid(Pid, Shards) of
+    case guild_manager_shards:find_shard_by_pid(Pid, Shards) of
         {ok, Index} ->
-            {_Shard, NewState} = restart_shard(Index, State),
-            {noreply, NewState};
+            restart_manager_shard(Index, State);
         not_found ->
             {noreply, State}
     end;
@@ -155,506 +325,112 @@ handle_info(_Info, State) ->
 
 -spec terminate(term(), state()) -> ok.
 terminate(_Reason, State) ->
-    Shards = maps:get(shards, State),
-    lists:foreach(
-        fun(ShardMap) ->
-            Pid = maps:get(pid, ShardMap),
-            catch gen_server:stop(Pid, shutdown, 5000)
-        end,
-        maps:values(Shards)
-    ),
-    catch ets:delete(?SHARD_TABLE),
-    catch ets:delete(?GUILD_PID_CACHE),
+    guild_manager_cache:stop_shards(State),
+    guild_manager_cache:delete_tables(),
     ok.
 
--spec code_change(term(), term(), term()) -> {ok, state()}.
-code_change(_OldVsn, State, _Extra) when is_map(State) ->
-    sync_shard_table(State),
+-spec code_change(term(), state(), term()) -> {ok, state()}.
+code_change(_OldVsn, State, _Extra) ->
+    erlang:process_flag(fullsweep_after, 0),
+    erlang:garbage_collect(),
     {ok, State}.
 
--spec determine_shard_count() -> {pos_integer(), configured | auto}.
-determine_shard_count() ->
-    case fluxer_gateway_env:get(guild_shards) of
-        Value when is_integer(Value), Value > 0 ->
-            {Value, configured};
-        _ ->
-            {default_shard_count(), auto}
+-spec restart_manager_shard(non_neg_integer(), state()) -> {noreply, state()}.
+restart_manager_shard(Index, State) ->
+    case guild_manager_shards:restart_shard(Index, State) of
+        {ok, _Shard, NewState} -> {noreply, NewState};
+        {error, NewState} -> {noreply, NewState}
     end.
 
--spec default_shard_count() -> pos_integer().
-default_shard_count() ->
-    Candidates = [
-        erlang:system_info(logical_processors_available),
-        erlang:system_info(schedulers_online)
-    ],
-    max(1, lists:max([C || C <- Candidates, is_integer(C), C > 0] ++ [1])).
+-spec normalize_pid_reply(term()) -> {ok, pid()} | {error, term()}.
+normalize_pid_reply({ok, Pid}) when is_pid(Pid) ->
+    {ok, Pid};
+normalize_pid_reply({error, _Reason} = Error) ->
+    Error;
+normalize_pid_reply(Other) ->
+    {error, {unexpected_reply, Other}}.
 
--spec start_shards(pos_integer()) -> #{non_neg_integer() => shard_map()}.
-start_shards(Count) ->
-    lists:foldl(
-        fun(Index, MapAcc) ->
-            case start_shard(Index) of
-                {ok, Shard} ->
-                    maps:put(Index, Shard, MapAcc);
-                {error, _Reason} ->
-                    MapAcc
-            end
-        end,
-        #{},
-        lists:seq(0, Count - 1)
-    ).
+-spec forward_guild_call(atom(), term(), gen_server:from(), state()) ->
+    {reply, term(), state()} | {noreply, state()}.
+forward_guild_call(Operation, GuildId0, From, State) ->
+    GuildId = require_guild_id(GuildId0),
+    guild_manager_router:forward_call(GuildId, {Operation, GuildId}, From, State).
 
--spec start_shard(non_neg_integer()) -> {ok, shard_map()} | {error, term()}.
-start_shard(Index) ->
-    case guild_manager_shard:start_link(Index) of
-        {ok, Pid} ->
-            Ref = erlang:monitor(process, Pid),
-            put_shard_pid(Index, Pid),
-            {ok, #{pid => Pid, ref => Ref}};
-        Error ->
-            Error
-    end.
+-spec forward_start_transferred(term(), term(), gen_server:from(), state()) ->
+    {reply, term(), state()} | {noreply, state()}.
+forward_start_transferred(GuildId0, TransferState, From, State) ->
+    GuildId = require_guild_id(GuildId0),
+    Request = {start_transferred, GuildId, require_map(TransferState)},
+    guild_manager_router:forward_call(GuildId, Request, From, State).
 
--spec restart_shard(non_neg_integer(), state()) -> {shard_map(), state()}.
-restart_shard(Index, State) ->
-    Shards = maps:get(shards, State),
-    case start_shard(Index) of
-        {ok, Shard} ->
-            Updated = State#{shards => maps:put(Index, Shard, Shards)},
-            sync_shard_table(Updated),
-            {Shard, Updated};
-        {error, _Reason} ->
-            clear_shard_pid(Index),
-            DummyPid = spawn(fun() -> ok end),
-            Dummy = #{pid => DummyPid, ref => make_ref()},
-            {Dummy, State}
-    end.
+-spec forward_timed_guild_call(atom(), term(), pos_integer(), gen_server:from(), state()) ->
+    {reply, term(), state()} | {noreply, state()}.
+forward_timed_guild_call(Operation, GuildId0, Timeout, From, State) ->
+    GuildId = require_guild_id(GuildId0),
+    guild_manager_router:forward_call(GuildId, {Operation, GuildId}, Timeout, From, State).
 
--spec call_shard(guild_id(), term(), pos_integer()) -> term().
-call_shard(GuildId, Request, Timeout) ->
-    case shard_pid_from_table(GuildId) of
-        {ok, Pid} ->
-            case catch gen_server:call(Pid, Request, Timeout) of
-                {'EXIT', {timeout, _}} ->
-                    {error, timeout};
-                {'EXIT', _} ->
-                    call_via_manager(Request, Timeout);
-                Reply ->
-                    maybe_cache_guild_pid(GuildId, Request, Reply)
-            end;
-        error ->
-            call_via_manager(Request, Timeout)
-    end.
+-spec forward_timed_start_transferred(
+    term(), term(), pos_integer(), gen_server:from(), state()
+) ->
+    {reply, term(), state()} | {noreply, state()}.
+forward_timed_start_transferred(GuildId0, TransferState, Timeout, From, State) ->
+    GuildId = require_guild_id(GuildId0),
+    Request = {start_transferred, GuildId, require_map(TransferState)},
+    guild_manager_router:forward_call(GuildId, Request, Timeout, From, State).
 
--spec call_via_manager(term(), pos_integer()) -> term().
-call_via_manager(Request, Timeout) ->
-    case catch gen_server:call(?MODULE, Request, Timeout + 1000) of
-        {'EXIT', {timeout, _}} ->
-            {error, timeout};
-        {'EXIT', _} ->
-            {error, unavailable};
-        Reply ->
-            Reply
-    end.
+-spec normalize_ensure_started(term(), guild_id()) -> ok | {error, term()}.
+normalize_ensure_started(ok, _GuildId) ->
+    ok;
+normalize_ensure_started({ok, GuildPid}, GuildId) when is_pid(GuildPid) ->
+    guild_manager_cache:maybe_cache_guild_pid(GuildId, {lookup, GuildId}, {ok, GuildPid}),
+    ok;
+normalize_ensure_started({error, _Reason} = Error, _GuildId) ->
+    Error;
+normalize_ensure_started(_Other, _GuildId) ->
+    {error, unavailable}.
 
--spec forward_call(guild_id(), term(), state()) -> {term(), state()}.
-forward_call(GuildId, {start_or_lookup, _} = Request, State) ->
-    case lookup_cached_guild_pid(GuildId) of
-        {ok, GuildPid} ->
-            {{ok, GuildPid}, State};
-        not_found ->
-            forward_call_to_shard(GuildId, Request, State)
-    end;
-forward_call(GuildId, {lookup, _} = Request, State) ->
-    case lookup_cached_guild_pid(GuildId) of
-        {ok, GuildPid} ->
-            {{ok, GuildPid}, State};
-        not_found ->
-            forward_call_to_shard(GuildId, Request, State)
-    end;
-forward_call(GuildId, Request, State) ->
-    forward_call_to_shard(GuildId, Request, State).
-
--spec forward_call_to_shard(guild_id(), term(), state()) -> {term(), state()}.
-forward_call_to_shard(GuildId, Request, State) ->
-    {Index, State1} = ensure_shard(GuildId, State),
-    Shards = maps:get(shards, State1),
-    ShardMap = maps:get(Index, Shards),
-    Pid = maps:get(pid, ShardMap),
-    case catch gen_server:call(Pid, Request, ?DEFAULT_GEN_SERVER_TIMEOUT) of
-        {'EXIT', _} ->
-            case erlang:is_process_alive(Pid) of
-                true ->
-                    {{error, timeout}, State1};
-                false ->
-                    {_Shard, State2} = restart_shard(Index, State1),
-                    forward_call_to_shard(GuildId, Request, State2)
-            end;
-        Reply ->
-            {maybe_cache_guild_pid(GuildId, Request, Reply), State1}
-    end.
-
--spec ensure_shard(guild_id(), state()) -> {non_neg_integer(), state()}.
-ensure_shard(GuildId, State) ->
-    Count = maps:get(shard_count, State),
-    Index = select_shard(GuildId, Count),
-    ensure_shard_for_index(Index, State).
-
--spec ensure_shard_for_index(non_neg_integer(), state()) -> {non_neg_integer(), state()}.
-ensure_shard_for_index(Index, State) ->
-    Shards = maps:get(shards, State),
-    case maps:get(Index, Shards, undefined) of
-        undefined ->
-            {_Shard, NewState} = restart_shard(Index, State),
-            {Index, NewState};
-        ShardMap when is_map(ShardMap) ->
-            Pid = maps:get(pid, ShardMap),
-            case erlang:is_process_alive(Pid) of
-                true ->
-                    {Index, State};
-                false ->
-                    {_Shard, NewState} = restart_shard(Index, State),
-                    {Index, NewState}
-            end
-    end.
-
--spec select_shard(guild_id(), pos_integer()) -> non_neg_integer().
-select_shard(GuildId, Count) when Count > 0 ->
-    rendezvous_router:select(GuildId, Count).
-
--spec aggregate_counts(term(), state()) -> {non_neg_integer(), state()}.
-aggregate_counts(Request, State) ->
-    Shards = maps:get(shards, State),
-    Counts = lists:map(
-        fun(ShardMap) ->
-            Pid = maps:get(pid, ShardMap),
-            case catch gen_server:call(Pid, Request, ?DEFAULT_GEN_SERVER_TIMEOUT) of
-                {ok, Count} -> Count;
-                _ -> 0
-            end
-        end,
-        maps:values(Shards)
-    ),
-    {lists:sum(Counts), State}.
-
--spec handle_reload_all([guild_id()], state()) -> {#{count := non_neg_integer()}, state()}.
-handle_reload_all([], State) ->
-    Shards = maps:get(shards, State),
-    {Replies, FinalState} = lists:foldl(
-        fun({_Index, ShardMap}, {AccReplies, AccState}) ->
-            Pid = maps:get(pid, ShardMap),
-            Reply = catch gen_server:call(Pid, {reload_all_guilds, []}, 15000),
-            {[Reply | AccReplies], AccState}
-        end,
-        {[], State},
-        maps:to_list(Shards)
-    ),
-    Count = lists:sum([maps:get(count, Reply, 0) || Reply <- Replies, is_map(Reply)]),
-    {#{count => Count}, FinalState};
-handle_reload_all(GuildIds, State) ->
-    Count = maps:get(shard_count, State),
-    Groups = group_ids_by_shard(GuildIds, Count),
-    {TotalCount, FinalState} = lists:foldl(
-        fun({Index, Ids}, {AccCount, AccState}) ->
-            {ShardIdx, State1} = ensure_shard_for_index(Index, AccState),
-            Shards = maps:get(shards, State1),
-            ShardMap = maps:get(ShardIdx, Shards),
-            Pid = maps:get(pid, ShardMap),
-            case catch gen_server:call(Pid, {reload_all_guilds, Ids}, 15000) of
-                #{count := CountReply} ->
-                    {AccCount + CountReply, State1};
-                _ ->
-                    {AccCount, State1}
-            end
-        end,
-        {0, State},
-        Groups
-    ),
-    {#{count => TotalCount}, FinalState}.
-
--spec group_ids_by_shard([guild_id()], pos_integer()) -> [{non_neg_integer(), [guild_id()]}].
-group_ids_by_shard(GuildIds, ShardCount) ->
-    rendezvous_router:group_keys(GuildIds, ShardCount).
-
--spec ensure_shard_table() -> ok.
-ensure_shard_table() ->
-    case ets:whereis(?SHARD_TABLE) of
-        undefined ->
-            _ = ets:new(?SHARD_TABLE, [named_table, public, set, {read_concurrency, true}]),
-            ok;
-        _ ->
-            ok
-    end.
-
--spec sync_shard_table(state()) -> ok.
-sync_shard_table(State) ->
-    ensure_shard_table(),
-    _ = ets:delete_all_objects(?SHARD_TABLE),
-    ShardCount = maps:get(shard_count, State),
-    ets:insert(?SHARD_TABLE, {shard_count, ShardCount}),
-    Shards = maps:get(shards, State),
-    lists:foreach(
-        fun({Index, #{pid := Pid}}) ->
-            put_shard_pid(Index, Pid)
-        end,
-        maps:to_list(Shards)
-    ),
-    ok.
-
--spec put_shard_pid(non_neg_integer(), pid()) -> ok.
-put_shard_pid(Index, Pid) ->
-    ensure_shard_table(),
-    ets:insert(?SHARD_TABLE, {{shard_pid, Index}, Pid}),
-    ok.
-
--spec clear_shard_pid(non_neg_integer()) -> ok.
-clear_shard_pid(Index) ->
-    try ets:delete(?SHARD_TABLE, {shard_pid, Index}) of
-        _ ->
-            ok
-    catch
-        error:badarg ->
-            ok
-    end.
-
--spec shard_pid_from_table(guild_id()) -> {ok, pid()} | error.
-shard_pid_from_table(GuildId) ->
-    try
-        case ets:lookup(?SHARD_TABLE, shard_count) of
-            [{shard_count, ShardCount}] when is_integer(ShardCount), ShardCount > 0 ->
-                Index = select_shard(GuildId, ShardCount),
-                case ets:lookup(?SHARD_TABLE, {shard_pid, Index}) of
-                    [{{shard_pid, Index}, Pid}] when is_pid(Pid) ->
-                        case erlang:is_process_alive(Pid) of
-                            true ->
-                                {ok, Pid};
-                            false ->
-                                error
-                        end;
-                    _ ->
-                        error
-                end;
-            _ ->
-                error
-        end
-    catch
-        error:badarg ->
-            error
-    end.
-
--spec lookup_cached_guild_pid(guild_id()) -> {ok, pid()} | not_found.
-lookup_cached_guild_pid(GuildId) ->
-    case catch ets:lookup(?GUILD_PID_CACHE, GuildId) of
-        [{GuildId, GuildPid}] when is_pid(GuildPid) ->
-            case erlang:is_process_alive(GuildPid) of
-                true ->
-                    {ok, GuildPid};
-                false ->
-                    ets:delete(?GUILD_PID_CACHE, GuildId),
-                    not_found
-            end;
-        _ ->
-            not_found
-    end.
-
--spec maybe_cache_guild_pid(guild_id(), term(), term()) -> term().
-maybe_cache_guild_pid(GuildId, {start_or_lookup, GuildId}, {ok, GuildPid} = Reply)
-    when is_pid(GuildPid)
+-spec normalize_handoff_result(term()) -> handoff_result() | {error, term()}.
+normalize_handoff_result(#{attempted := Attempted, handed_off := HandedOff}) when
+    is_integer(Attempted), Attempted >= 0, is_integer(HandedOff), HandedOff >= 0
 ->
-    ets:insert(?GUILD_PID_CACHE, {GuildId, GuildPid}),
-    Reply;
-maybe_cache_guild_pid(GuildId, {lookup, GuildId}, {ok, GuildPid} = Reply) when is_pid(GuildPid) ->
-    ets:insert(?GUILD_PID_CACHE, {GuildId, GuildPid}),
-    Reply;
-maybe_cache_guild_pid(_GuildId, _Request, Reply) ->
-    Reply.
+    #{attempted => Attempted, handed_off => HandedOff};
+normalize_handoff_result({error, _Reason} = Error) ->
+    Error;
+normalize_handoff_result(Other) ->
+    {error, {unexpected_reply, Other}}.
 
--spec find_shard_by_ref(reference(), #{non_neg_integer() => shard_map()}) ->
-    {ok, non_neg_integer()} | not_found.
-find_shard_by_ref(Ref, Shards) ->
-    find_shard_by(fun(#{ref := R}) -> R =:= Ref end, Shards).
+-spec require_guild_id(term()) -> guild_id().
+require_guild_id(GuildId) when is_integer(GuildId) ->
+    GuildId;
+require_guild_id(GuildId) ->
+    erlang:error({bad_guild_id, GuildId}).
 
--spec find_shard_by_pid(pid(), #{non_neg_integer() => shard_map()}) ->
-    {ok, non_neg_integer()} | not_found.
-find_shard_by_pid(Pid, Shards) ->
-    find_shard_by(fun(#{pid := P}) -> P =:= Pid end, Shards).
+-spec require_guild_ids(term()) -> [guild_id()].
+require_guild_ids(GuildIds) when is_list(GuildIds) ->
+    [require_guild_id(GuildId) || GuildId <- GuildIds];
+require_guild_ids(GuildIds) ->
+    erlang:error({bad_guild_ids, GuildIds}).
 
--spec find_shard_by(fun((shard_map()) -> boolean()), #{non_neg_integer() => shard_map()}) ->
-    {ok, non_neg_integer()} | not_found.
-find_shard_by(Pred, Shards) ->
-    maps:fold(
-        fun
-            (_, _, {ok, _} = Found) ->
-                Found;
-            (Index, ShardMap, not_found) ->
-                case Pred(ShardMap) of
-                    true -> {ok, Index};
-                    false -> not_found
-                end
-        end,
-        not_found,
-        Shards
-    ).
+-spec require_timeout(term()) -> pos_integer().
+require_timeout(Timeout) when is_integer(Timeout), Timeout > 0 ->
+    Timeout;
+require_timeout(Timeout) ->
+    erlang:error({bad_timeout, Timeout}).
 
--spec cleanup_guild_from_cache(pid()) -> ok.
-cleanup_guild_from_cache(Pid) ->
-    case ets:match_object(?GUILD_PID_CACHE, {'$1', Pid}) of
-        [{GuildId, _Pid}] ->
-            ets:delete(?GUILD_PID_CACHE, GuildId);
-        [] ->
-            ok
-    end,
-    ok.
+-spec require_node(term()) -> node().
+require_node(Node) when is_atom(Node) ->
+    Node;
+require_node(Node) ->
+    erlang:error({bad_node, Node}).
 
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
+-spec require_nodes(term()) -> [node()].
+require_nodes(Nodes) when is_list(Nodes) ->
+    [require_node(Node) || Node <- Nodes];
+require_nodes(Nodes) ->
+    erlang:error({bad_nodes, Nodes}).
 
-default_shard_count_positive_test() ->
-    Count = default_shard_count(),
-    ?assert(Count >= 1).
-
-select_shard_deterministic_test() ->
-    GuildId = 12345,
-    ShardCount = 8,
-    Shard1 = select_shard(GuildId, ShardCount),
-    Shard2 = select_shard(GuildId, ShardCount),
-    ?assertEqual(Shard1, Shard2).
-
-select_shard_in_range_test() ->
-    ShardCount = 8,
-    lists:foreach(
-        fun(GuildId) ->
-            Shard = select_shard(GuildId, ShardCount),
-            ?assert(Shard >= 0 andalso Shard < ShardCount)
-        end,
-        lists:seq(1, 100)
-    ).
-
-group_ids_by_shard_test() ->
-    GuildIds = [1, 2, 3, 4, 5],
-    ShardCount = 2,
-    Groups = group_ids_by_shard(GuildIds, ShardCount),
-    AllIds = lists:flatten([Ids || {_, Ids} <- Groups]),
-    ?assertEqual(lists:sort(GuildIds), lists:sort(AllIds)).
-
-find_shard_by_ref_found_test() ->
-    Ref = make_ref(),
-    Shards = #{0 => #{pid => self(), ref => Ref}},
-    ?assertMatch({ok, 0}, find_shard_by_ref(Ref, Shards)).
-
-find_shard_by_ref_not_found_test() ->
-    Shards = #{0 => #{pid => self(), ref => make_ref()}},
-    ?assertEqual(not_found, find_shard_by_ref(make_ref(), Shards)).
-
-find_shard_by_pid_found_test() ->
-    Pid = self(),
-    Shards = #{0 => #{pid => Pid, ref => make_ref()}},
-    ?assertMatch({ok, 0}, find_shard_by_pid(Pid, Shards)).
-
-forward_call_to_shard_timeout_does_not_restart_shard_test_() ->
-    {timeout, 15, fun() ->
-        catch ets:delete(guild_pid_cache),
-        SlowShardPid = spawn(fun() -> slow_shard_loop() end),
-        ShardRef = erlang:monitor(process, SlowShardPid),
-        State = #{
-            shards => #{0 => #{pid => SlowShardPid, ref => ShardRef}},
-            shard_count => 1
-        },
-        ets:new(guild_pid_cache, [named_table, public, set, {read_concurrency, true}]),
-        try
-            GuildId = 99999,
-            {Reply, NewState} = forward_call_to_shard(GuildId, {start_or_lookup, GuildId}, State),
-            ?assertMatch({error, timeout}, Reply),
-            ?assert(is_process_alive(SlowShardPid)),
-            NewShards = maps:get(shards, NewState),
-            #{pid := ShardPidAfter} = maps:get(0, NewShards),
-            ?assertEqual(SlowShardPid, ShardPidAfter)
-        after
-            SlowShardPid ! stop,
-            catch ets:delete(guild_pid_cache)
-        end
-    end}.
-
-slow_shard_loop() ->
-    receive
-        {'$gen_call', _From, _Msg} ->
-            timer:sleep(10000),
-            slow_shard_loop();
-        stop ->
-            ok;
-        _ ->
-            slow_shard_loop()
-    end.
-
-cleanup_guild_from_cache_does_not_remove_new_pid_test() ->
-    catch ets:delete(guild_pid_cache),
-    ets:new(guild_pid_cache, [named_table, public, set, {read_concurrency, true}]),
-    try
-        OldPid = spawn(fun() -> ok end),
-        timer:sleep(10),
-        NewPid = spawn(fun() -> timer:sleep(1000) end),
-        ets:insert(guild_pid_cache, {42, NewPid}),
-        cleanup_guild_from_cache(OldPid),
-        [{42, FoundPid}] = ets:lookup(guild_pid_cache, 42),
-        ?assertEqual(NewPid, FoundPid)
-    after
-        catch ets:delete(guild_pid_cache)
-    end.
-
-start_or_lookup_uses_shard_table_without_manager_test_() ->
-    {timeout, 10, fun() ->
-        catch ets:delete(guild_pid_cache),
-        catch ets:delete(guild_manager_shard_table),
-        ets:new(guild_pid_cache, [named_table, public, set, {read_concurrency, true}]),
-        ets:new(guild_manager_shard_table, [named_table, public, set, {read_concurrency, true}]),
-        GuildId = 101,
-        GuildPid = spawn(fun() -> timer:sleep(1000) end),
-        ShardPid = spawn(fun() -> shard_stub_loop(GuildId, GuildPid) end),
-        ets:insert(guild_manager_shard_table, {shard_count, 1}),
-        ets:insert(guild_manager_shard_table, {{shard_pid, 0}, ShardPid}),
-        try
-            ?assertEqual({ok, GuildPid}, start_or_lookup(GuildId))
-        after
-            ShardPid ! stop,
-            catch ets:delete(guild_manager_shard_table),
-            catch ets:delete(guild_pid_cache)
-        end
-    end}.
-
-call_shard_timeout_returns_error_timeout_test_() ->
-    {timeout, 10, fun() ->
-        catch ets:delete(guild_pid_cache),
-        catch ets:delete(guild_manager_shard_table),
-        ets:new(guild_pid_cache, [named_table, public, set, {read_concurrency, true}]),
-        ets:new(guild_manager_shard_table, [named_table, public, set, {read_concurrency, true}]),
-        GuildId = 202,
-        SlowShardPid = spawn(fun() -> slow_shard_loop() end),
-        ets:insert(guild_manager_shard_table, {shard_count, 1}),
-        ets:insert(guild_manager_shard_table, {{shard_pid, 0}, SlowShardPid}),
-        try
-            ?assertEqual({error, timeout}, call_shard(GuildId, {start_or_lookup, GuildId}, 20))
-        after
-            SlowShardPid ! stop,
-            catch ets:delete(guild_manager_shard_table),
-            catch ets:delete(guild_pid_cache)
-        end
-    end}.
-
-shard_stub_loop(GuildId, GuildPid) ->
-    receive
-        stop ->
-            ok;
-        {'$gen_call', From, {start_or_lookup, GuildId}} ->
-            gen_server:reply(From, {ok, GuildPid}),
-            shard_stub_loop(GuildId, GuildPid);
-        {'$gen_call', From, {lookup, GuildId}} ->
-            gen_server:reply(From, {ok, GuildPid}),
-            shard_stub_loop(GuildId, GuildPid);
-        {'$gen_call', From, _Request} ->
-            gen_server:reply(From, {error, unsupported}),
-            shard_stub_loop(GuildId, GuildPid);
-        _ ->
-            shard_stub_loop(GuildId, GuildPid)
-    end.
-
--endif.
+-spec require_map(term()) -> map().
+require_map(Value) when is_map(Value) ->
+    Value;
+require_map(Value) ->
+    erlang:error({bad_map, Value}).

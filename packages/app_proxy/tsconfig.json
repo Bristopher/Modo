@@ -1,7 +1,0 @@
-{
-	"extends": "../../tsconfigs/package-hono.json",
-	"compilerOptions": {
-		"jsx": "preserve"
-	},
-	"include": ["src/**/*"]
-}

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 lockfileVersion: '9.0'
 
 settings:
@@ -25,9 +26,6 @@ importers:
       '@dnd-kit/utilities':
         specifier: 3.2.2
         version: 3.2.2(react@19.2.3)
-      '@electron-webauthn/native':
-        specifier: 0.0.6
-        version: 0.0.6
       '@floating-ui/react':
         specifier: 0.27.16
         version: 0.27.16(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -46,9 +44,6 @@ importers:
       '@livekit/components-react':
         specifier: 2.9.17
         version: 2.9.17(livekit-client@2.17.0(@types/dom-mediacapture-record@1.0.22))(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(tslib@2.8.1)
-      '@livekit/track-processors':
-        specifier: 0.7.0
-        version: 0.7.0(@types/dom-mediacapture-transform@0.1.11)(livekit-client@2.17.0(@types/dom-mediacapture-record@1.0.22))
       '@marsidev/react-turnstile':
         specifier: 1.4.1
         version: 1.4.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -64,9 +59,6 @@ importers:
       '@radix-ui/react-switch':
         specifier: 1.2.6
         version: 1.2.6(@types/react-dom@19.2.3(@types/react@19.2.8))(@types/react@19.2.8)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      '@sentry/react':
-        specifier: 10.34.0
-        version: 10.34.0(react@19.2.3)
       '@simplewebauthn/browser':
         specifier: 13.2.2
         version: 13.2.2
@@ -85,9 +77,6 @@ importers:
       electron-squirrel-startup:
         specifier: 1.0.1
         version: 1.0.1
-      electron-webauthn-mac:
-        specifier: 1.0.0
-        version: 1.0.0
       emoji-regex:
         specifier: 10.6.0
         version: 10.6.0
@@ -172,15 +161,6 @@ importers:
       react-hotkeys-hook:
         specifier: 5.2.3
         version: 5.2.3(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      react-modal-sheet:
-        specifier: 5.2.1
-        version: 5.2.1(motion@12.26.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      react-select:
-        specifier: 5.10.2
-        version: 5.10.2(@types/react@19.2.8)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      react-zoom-pan-pinch:
-        specifier: 3.7.0
-        version: 3.7.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       rxjs:
         specifier: 7.8.2
         version: 7.8.2
@@ -335,9 +315,6 @@ importers:
       vitest:
         specifier: 4.0.17
         version: 4.0.17(@types/node@25.0.9)(happy-dom@20.3.0)(jiti@2.6.1)(jsdom@27.4.0)(lightningcss@1.30.2)(terser@5.44.1)(tsx@4.21.0)
-      wasm-pack:
-        specifier: 0.13.1
-        version: 0.13.1
     optionalDependencies:
       electron-log:
         specifier: 5.4.3
@@ -1299,41 +1276,6 @@ packages:
     peerDependencies:
       react: '>=16.8.0'
 
-  '@electron-webauthn/native-darwin-arm64@0.0.6':
-    resolution: {integrity: sha512-ErkeI1TO1sVs0AnRn4hTQ550+0+mFiGYs2BGgyV0SP6GmmvHqTRF9xSBJpF0Hg6j3pZrk6XXcASQL0zr+gYJ3g==}
-    engines: {node: '>= 10'}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@electron-webauthn/native-darwin-x64@0.0.6':
-    resolution: {integrity: sha512-oONOYWGtQUi3nnG6mLtM5OMNdQipD68+6mJsQmOQV7s+S1FEp7f966stDiFhKBqVzu280ZEmVtARuSSt2nI2pQ==}
-    engines: {node: '>= 10'}
-    cpu: [x64]
-    os: [darwin]
-
-  '@electron-webauthn/native-linux-x64-gnu@0.0.6':
-    resolution: {integrity: sha512-WvA/gV0YDujMBg9b+zVq+nzgtQ3Ys36P/4O2/jqH5Sygp3XrnpolHlXGigwXf07/yI2+1R6ZGQdPKGSB2A7Llg==}
-    engines: {node: '>= 10'}
-    cpu: [x64]
-    os: [linux]
-
-  '@electron-webauthn/native-win32-arm64-msvc@0.0.6':
-    resolution: {integrity: sha512-YpGxh2Zru9a8yqBqn2F9HLjITPyL9LUVj5v2MADhuDo+ZBF+3FPGjZXliAM/DrCbRTG/XffB6JL/xiFS79BbKw==}
-    engines: {node: '>= 10'}
-    cpu: [arm64]
-    os: [win32]
-
-  '@electron-webauthn/native-win32-x64-msvc@0.0.6':
-    resolution: {integrity: sha512-h8J7wFSL2bsE+06aU8CYg89Pp+jxiEl7yBL6/AJnu1sVLQbAMpj+h5LkzMpnXwTR44BVyxcyl2+YPnBP0nR4fA==}
-    engines: {node: '>= 10'}
-    cpu: [x64]
-    os: [win32]
-
-  '@electron-webauthn/native@0.0.6':
-    resolution: {integrity: sha512-ZqHp4gQORBmoItjE/0GjzNr8RJcaixCalf9eqAKMiIFwyKtS9KPBqVrMi6iGOrDhp/XPDtAoPA7BH8LutYh8IQ==}
-    engines: {node: '>= 10'}
-    deprecated: This package is deprecated. Use electron-webauthn instead.
-
   '@electron/asar@3.4.1':
     resolution: {integrity: sha512-i4/rNPRS84t0vSRa2HorerGRXWyF4vThfHesw0dmcWHp+cspK743UanA0suA5Q5y8kzY2y6YKrvbIUn69BCAiA==}
     engines: {node: '>=10.12.0'}
@@ -2104,12 +2046,6 @@ packages:
   '@livekit/protocol@1.42.2':
     resolution: {integrity: sha512-0jeCwoMJKcwsZICg5S6RZM4xhJoF78qMvQELjACJQn6/VB+jmiySQKOSELTXvPBVafHfEbMlqxUw2UR1jTXs2g==}
 
-  '@livekit/track-processors@0.7.0':
-    resolution: {integrity: sha512-ERdByDrHPLA8xzZNFcqWiLt5ZJs4AZo1RjDlYplb//xeaWURaJdulqrds5EHSMHmELmTzlEOSgvSrzFlatlJQQ==}
-    peerDependencies:
-      '@types/dom-mediacapture-transform': ^0.1.9
-      livekit-client: ^1.12.0 || ^2.1.0
-
   '@malept/cross-spawn-promise@2.0.0':
     resolution: {integrity: sha512-1DpKU0Z5ThltBwjNySMC14g0CkbyhCaz9FkhxqNsZI6uAPJXFS8cMXlBKo26FJ8ZuW6S9GCMcR9IO5k2X5/9Fg==}
     engines: {node: '>= 12.13.0'}
@@ -2123,9 +2059,6 @@ packages:
     peerDependencies:
       react: ^17.0.2 || ^18.0.0 || ^19.0
       react-dom: ^17.0.2 || ^18.0.0 || ^19.0
-
-  '@mediapipe/tasks-vision@0.10.14':
-    resolution: {integrity: sha512-vOifgZhkndgybdvoRITzRkIueWWSiCKuEUXXK6Q4FaJsFvRJuwgg++vqFUMlL0Uox62U5aEXFhHxlhV7Ja5e3Q==}
 
   '@messageformat/parser@5.1.1':
     resolution: {integrity: sha512-3p0YRGCcTUCYvBKLIxtDDyrJ0YijGIwrTRu1DT8gIviIDZru8H23+FkY6MJBzM1n9n20CiM4VeDYuBsrrwnLjg==}
@@ -3287,36 +3220,6 @@ packages:
       webpack-hot-middleware:
         optional: true
 
-  '@sentry-internal/browser-utils@10.34.0':
-    resolution: {integrity: sha512-0YNr60rGHyedmwkO0lbDBjNx2KAmT3kWamjaqu7Aw+jsESoPLgt+fzaTVvUBvkftBDui2PeTSzXm/nqzssctYg==}
-    engines: {node: '>=18'}
-
-  '@sentry-internal/feedback@10.34.0':
-    resolution: {integrity: sha512-wgGnq+iNxsFSOe9WX/FOvtoItSTjgLJJ4dQkVYtcVM6WGBVIg4wgNYfECCnRNztUTPzpZHLjC9r+4Pym451DDQ==}
-    engines: {node: '>=18'}
-
-  '@sentry-internal/replay-canvas@10.34.0':
-    resolution: {integrity: sha512-XWH/9njtgMD+LLWjc4KKgBpb+dTCkoUEIFDxcvzG/87d+jirmzf0+r8EfpLwKG+GrqNiiGRV39zIqu0SfPl+cw==}
-    engines: {node: '>=18'}
-
-  '@sentry-internal/replay@10.34.0':
-    resolution: {integrity: sha512-Vmea0GcOg57z/S1bVSj3saFcRvDqdLzdy4wd9fQMpMgy5OCbTlo7lxVUndKzbcZnanma6zF6VxwnWER1WuN9RA==}
-    engines: {node: '>=18'}
-
-  '@sentry/browser@10.34.0':
-    resolution: {integrity: sha512-8WCsAXli5Z+eIN8dMY8KGQjrS3XgUp1np/pjdeWNrVPVR8q8XpS34qc+f+y/LFrYQC9bs2Of5aIBwRtDCIvRsg==}
-    engines: {node: '>=18'}
-
-  '@sentry/core@10.34.0':
-    resolution: {integrity: sha512-4FFpYBMf0VFdPcsr4grDYDOR87mRu6oCfb51oQjU/Pndmty7UgYo0Bst3LEC/8v0SpytBtzXq+Wx/fkwulBesg==}
-    engines: {node: '>=18'}
-
-  '@sentry/react@10.34.0':
-    resolution: {integrity: sha512-LDpg9WDrEwo6lr/YOAA54id/g5D1PGKEIiOGxqRZbBVyjzrsquwzhSG2CMqnp+YO6lz/r96LWuqm2cvfpht2zA==}
-    engines: {node: '>=18'}
-    peerDependencies:
-      react: ^16.14.0 || 17.x || 18.x || 19.x
-
   '@simplewebauthn/browser@13.2.2':
     resolution: {integrity: sha512-FNW1oLQpTJyqG5kkDg5ZsotvWgmBaC6jCHR7Ej0qUNep36Wl9tj2eZu7J5rP+uhXgHaLk+QQ3lqcw2vS5MX1IA==}
 
@@ -4413,9 +4316,6 @@ packages:
 
   electron-to-chromium@1.5.267:
     resolution: {integrity: sha512-0Drusm6MVRXSOJpGbaSVgcQsuB4hEkMpHXaVstcPmhu5LIedxs1xNK/nIxmQIU/RPC0+1/o0AVZfBTkTNJOdUw==}
-
-  electron-webauthn-mac@1.0.0:
-    resolution: {integrity: sha512-cmTp23hBa1WcE/mTY7GlaBTu2l0DndEo9P+D2oOiSCnCe8weVDaeaKY+GrRYmJ74tXllxv4YO6XODWLrJfpUBw==}
 
   electron-winstaller@5.4.0:
     resolution: {integrity: sha512-bO3y10YikuUwUuDUQRM4KfwNkKhnpVO7IPdbsrejwN9/AABJzzTQ4GeHwyzNSrVO+tEH3/Np255a3sVZpZDjvg==}
@@ -6130,22 +6030,9 @@ packages:
   react-is@18.3.1:
     resolution: {integrity: sha512-/LLMVyas0ljjAtoYiPqYiL8VWXzUUdThrmU5+n20DZv+a+ClRoevUzw5JxU+Ieh5/c87ytoTBV9G1FiKfNJdmg==}
 
-  react-modal-sheet@5.2.1:
-    resolution: {integrity: sha512-M6JDBU0Ut4vksED3P9hZXnVW2S3755VXXPmbniPv7hNcn9y+1qz+zrZb0U3iSDDMeUe1zwfXTmrX3Mcw7wOtHQ==}
-    engines: {node: '>=18'}
-    peerDependencies:
-      motion: '>=11'
-      react: '>=16'
-
   react-refresh@0.18.0:
     resolution: {integrity: sha512-QgT5//D3jfjJb6Gsjxv0Slpj23ip+HtOpnNgnb2S5zU3CB26G/IDPGoy4RJB42wzFE46DRsstbW6tKHoKbhAxw==}
     engines: {node: '>=0.10.0'}
-
-  react-select@5.10.2:
-    resolution: {integrity: sha512-Z33nHdEFWq9tfnfVXaiM12rbJmk+QjFEztWLtmXqQhz6Al4UZZ9xc0wiatmGtUOCCnHN0WizL3tCMYRENX4rVQ==}
-    peerDependencies:
-      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
-      react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
   react-stately@3.43.0:
     resolution: {integrity: sha512-dScb9fTL1tRtFODPnk/2rP0a9kp1C+7+40RArS0C7j0auAUmnrO/wDILojwQUso7/kkys4fP707fTwGJDeJ7vg==}
@@ -6157,22 +6044,6 @@ packages:
     peerDependencies:
       react: '>=16.6.0'
       react-dom: '>=16.6.0'
-
-  react-use-measure@2.1.7:
-    resolution: {integrity: sha512-KrvcAo13I/60HpwGO5jpW7E9DfusKyLPLvuHlUyP5zqnmAPhNc6qTRjUQrdTADl0lpPpDVU2/Gg51UlOGHXbdg==}
-    peerDependencies:
-      react: '>=16.13'
-      react-dom: '>=16.13'
-    peerDependenciesMeta:
-      react-dom:
-        optional: true
-
-  react-zoom-pan-pinch@3.7.0:
-    resolution: {integrity: sha512-UmReVZ0TxlKzxSbYiAj+LeGRW8s8LraAFTXRAxzMYnNRgGPsxCudwZKVkjvGmjtx7SW/hZamt69NUmGf4xrkXA==}
-    engines: {node: '>=8', npm: '>=5'}
-    peerDependencies:
-      react: '*'
-      react-dom: '*'
 
   react@19.2.3:
     resolution: {integrity: sha512-Ku/hhYbVjOQnXDZFv2+RibmLFGwFdeeKHFcOTlrt7xplBnya5OGn/hIRDsqDiSUcfORsDC7MPxwork8jBwsIWA==}
@@ -6934,10 +6805,6 @@ packages:
   walk-up-path@4.0.0:
     resolution: {integrity: sha512-3hu+tD8YzSLGuFYtPRb48vdhKMi0KQV5sn+uWr8+7dMEq/2G/dtLrdDinkLjqq5TIbIBjYJ4Ax/n3YiaW7QM8A==}
     engines: {node: 20 || >=22}
-
-  wasm-pack@0.13.1:
-    resolution: {integrity: sha512-P9exD4YkjpDbw68xUhF3MDm/CC/3eTmmthyG5bHJ56kalxOTewOunxTke4SyF8MTXV6jUtNjXggPgrGmMtczGg==}
-    hasBin: true
 
   watchpack@2.5.1:
     resolution: {integrity: sha512-Zn5uXdcFNIA1+1Ei5McRd+iRzfhENPCe7LeABkJtNulSxjma+l7ltNx55BWZkRlwRnpOgHqxnjyaDgJnNXnqzg==}
@@ -8273,29 +8140,6 @@ snapshots:
       react: 19.2.3
       tslib: 2.8.1
 
-  '@electron-webauthn/native-darwin-arm64@0.0.6':
-    optional: true
-
-  '@electron-webauthn/native-darwin-x64@0.0.6':
-    optional: true
-
-  '@electron-webauthn/native-linux-x64-gnu@0.0.6':
-    optional: true
-
-  '@electron-webauthn/native-win32-arm64-msvc@0.0.6':
-    optional: true
-
-  '@electron-webauthn/native-win32-x64-msvc@0.0.6':
-    optional: true
-
-  '@electron-webauthn/native@0.0.6':
-    optionalDependencies:
-      '@electron-webauthn/native-darwin-arm64': 0.0.6
-      '@electron-webauthn/native-darwin-x64': 0.0.6
-      '@electron-webauthn/native-linux-x64-gnu': 0.0.6
-      '@electron-webauthn/native-win32-arm64-msvc': 0.0.6
-      '@electron-webauthn/native-win32-x64-msvc': 0.0.6
-
   '@electron/asar@3.4.1':
     dependencies:
       commander: 5.1.0
@@ -9003,12 +8847,6 @@ snapshots:
     dependencies:
       '@bufbuild/protobuf': 1.10.1
 
-  '@livekit/track-processors@0.7.0(@types/dom-mediacapture-transform@0.1.11)(livekit-client@2.17.0(@types/dom-mediacapture-record@1.0.22))':
-    dependencies:
-      '@mediapipe/tasks-vision': 0.10.14
-      '@types/dom-mediacapture-transform': 0.1.11
-      livekit-client: 2.17.0(@types/dom-mediacapture-record@1.0.22)
-
   '@malept/cross-spawn-promise@2.0.0':
     dependencies:
       cross-spawn: 7.0.6
@@ -9026,8 +8864,6 @@ snapshots:
     dependencies:
       react: 19.2.3
       react-dom: 19.2.3(react@19.2.3)
-
-  '@mediapipe/tasks-vision@0.10.14': {}
 
   '@messageformat/parser@5.1.1':
     dependencies:
@@ -10557,40 +10393,6 @@ snapshots:
       html-entities: 2.6.0
       react-refresh: 0.18.0
 
-  '@sentry-internal/browser-utils@10.34.0':
-    dependencies:
-      '@sentry/core': 10.34.0
-
-  '@sentry-internal/feedback@10.34.0':
-    dependencies:
-      '@sentry/core': 10.34.0
-
-  '@sentry-internal/replay-canvas@10.34.0':
-    dependencies:
-      '@sentry-internal/replay': 10.34.0
-      '@sentry/core': 10.34.0
-
-  '@sentry-internal/replay@10.34.0':
-    dependencies:
-      '@sentry-internal/browser-utils': 10.34.0
-      '@sentry/core': 10.34.0
-
-  '@sentry/browser@10.34.0':
-    dependencies:
-      '@sentry-internal/browser-utils': 10.34.0
-      '@sentry-internal/feedback': 10.34.0
-      '@sentry-internal/replay': 10.34.0
-      '@sentry-internal/replay-canvas': 10.34.0
-      '@sentry/core': 10.34.0
-
-  '@sentry/core@10.34.0': {}
-
-  '@sentry/react@10.34.0(react@19.2.3)':
-    dependencies:
-      '@sentry/browser': 10.34.0
-      '@sentry/core': 10.34.0
-      react: 19.2.3
-
   '@simplewebauthn/browser@13.2.2': {}
 
   '@sinclair/typebox@0.27.8': {}
@@ -11893,8 +11695,6 @@ snapshots:
       - supports-color
 
   electron-to-chromium@1.5.267: {}
-
-  electron-webauthn-mac@1.0.0: {}
 
   electron-winstaller@5.4.0:
     dependencies:
@@ -13794,32 +13594,7 @@ snapshots:
 
   react-is@18.3.1: {}
 
-  react-modal-sheet@5.2.1(motion@12.26.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-dom@19.2.3(react@19.2.3))(react@19.2.3):
-    dependencies:
-      motion: 12.26.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      react: 19.2.3
-      react-use-measure: 2.1.7(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-    transitivePeerDependencies:
-      - react-dom
-
   react-refresh@0.18.0: {}
-
-  react-select@5.10.2(@types/react@19.2.8)(react-dom@19.2.3(react@19.2.3))(react@19.2.3):
-    dependencies:
-      '@babel/runtime': 7.28.6
-      '@emotion/cache': 11.14.0
-      '@emotion/react': 11.14.0(@types/react@19.2.8)(react@19.2.3)
-      '@floating-ui/dom': 1.7.4
-      '@types/react-transition-group': 4.4.12(@types/react@19.2.8)
-      memoize-one: 6.0.0
-      prop-types: 15.8.1
-      react: 19.2.3
-      react-dom: 19.2.3(react@19.2.3)
-      react-transition-group: 4.4.5(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      use-isomorphic-layout-effect: 1.2.1(@types/react@19.2.8)(react@19.2.3)
-    transitivePeerDependencies:
-      - '@types/react'
-      - supports-color
 
   react-stately@3.43.0(react@19.2.3):
     dependencies:
@@ -13857,17 +13632,6 @@ snapshots:
       dom-helpers: 5.2.1
       loose-envify: 1.4.0
       prop-types: 15.8.1
-      react: 19.2.3
-      react-dom: 19.2.3(react@19.2.3)
-
-  react-use-measure@2.1.7(react-dom@19.2.3(react@19.2.3))(react@19.2.3):
-    dependencies:
-      react: 19.2.3
-    optionalDependencies:
-      react-dom: 19.2.3(react@19.2.3)
-
-  react-zoom-pan-pinch@3.7.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3):
-    dependencies:
       react: 19.2.3
       react-dom: 19.2.3(react@19.2.3)
 
@@ -14685,12 +14449,6 @@ snapshots:
       xml-name-validator: 5.0.0
 
   walk-up-path@4.0.0: {}
-
-  wasm-pack@0.13.1:
-    dependencies:
-      binary-install: 1.1.2
-    transitivePeerDependencies:
-      - debug
 
   watchpack@2.5.1:
     dependencies:

@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import crypto from 'node:crypto';
+import type {AttachmentID, ChannelID} from '../../BrandedTypes';
+import {makeAttachmentCdnKey} from '../../channel/services/message/MessageHelpers';
+import type {IStorageService} from '../../infrastructure/IStorageService';
+import {Logger} from '../../Logger';
+import {streamCdnAssetIfExists} from './AssetArchiveHelpers';
+
+interface CollectedAttachment {
+	archivePath: string;
+	filename: string;
+	size: number;
+}
+
+interface CollectResult {
+	hash: string;
+	archivePath: string;
+}
+
+interface AttachmentManifestEntry {
+	hash: string;
+	archivePath: string;
+	filename: string;
+	size: number;
+}
+
+interface AttachmentArchiveWriter {
+	append(input: Buffer | NodeJS.ReadableStream | string, options: {name: string}): void;
+}
+
+interface CollectParams {
+	storageService: IStorageService;
+	archive: AttachmentArchiveWriter;
+	channelId: ChannelID;
+	attachmentId: AttachmentID | bigint;
+	filename: string;
+}
+
+export class ContentAddressedAttachmentCollector {
+	private hashIndex = new Map<string, CollectedAttachment>();
+
+	async collect(params: CollectParams): Promise<CollectResult | null> {
+		const {storageService, archive, channelId, attachmentId, filename} = params;
+		const storageKey = makeAttachmentCdnKey(channelId, attachmentId, filename);
+		const STREAM_THRESHOLD = 10 * 1024 * 1024;
+		const streamed = await streamCdnAssetIfExists(storageService, storageKey);
+		if (!streamed) {
+			Logger.warn(
+				{channelId: channelId.toString(), attachmentId: attachmentId.toString(), filename},
+				'Attachment not found in S3 during archive collection',
+			);
+			return null;
+		}
+		if (streamed.contentLength > STREAM_THRESHOLD) {
+			const keyHash = crypto.createHash('sha256').update(storageKey).digest('hex');
+			const existing = this.hashIndex.get(keyHash);
+			if (existing) {
+				streamed.body.resume();
+				return {hash: keyHash, archivePath: existing.archivePath};
+			}
+			const archivePath = `attachments/${keyHash.slice(0, 16)}/${filename}`;
+			archive.append(streamed.body, {name: archivePath});
+			this.hashIndex.set(keyHash, {archivePath, filename, size: streamed.contentLength});
+			return {hash: keyHash, archivePath};
+		}
+		const chunks: Array<Buffer> = [];
+		for await (const chunk of streamed.body) {
+			chunks.push(Buffer.from(chunk));
+		}
+		const buffer = Buffer.concat(chunks);
+		const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+		const existing = this.hashIndex.get(hash);
+		if (existing) {
+			return {hash, archivePath: existing.archivePath};
+		}
+		const archivePath = `attachments/${hash.slice(0, 16)}/${filename}`;
+		archive.append(buffer, {name: archivePath});
+		this.hashIndex.set(hash, {archivePath, filename, size: buffer.length});
+		return {hash, archivePath};
+	}
+
+	getManifest(): Array<AttachmentManifestEntry> {
+		const entries: Array<AttachmentManifestEntry> = [];
+		for (const [hash, entry] of this.hashIndex.entries()) {
+			entries.push({
+				hash,
+				archivePath: entry.archivePath,
+				filename: entry.filename,
+				size: entry.size,
+			});
+		}
+		return entries;
+	}
+}

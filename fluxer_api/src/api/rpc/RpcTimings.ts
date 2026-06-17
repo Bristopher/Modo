@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import {hostname} from 'node:os';
+import type {RpcSessionTimings, RpcTimingNode} from '@fluxer/schema/src/domains/rpc/RpcSchemas';
+
+export type RpcTimingSteps = Record<string, RpcTimingNode>;
+
+export function startRpcTiming(): bigint {
+	return process.hrtime.bigint();
+}
+
+function elapsedRpcTimingUs(startedAtNs: bigint): number {
+	return Number((process.hrtime.bigint() - startedAtNs) / 1000n);
+}
+
+export function createRpcTimingNode(startedAtNs: bigint, steps?: RpcTimingSteps): RpcTimingNode {
+	return {
+		duration_us: elapsedRpcTimingUs(startedAtNs),
+		...(steps && Object.keys(steps).length > 0 ? {steps} : {}),
+	};
+}
+
+function firstRuntimeName(names: Array<string>, fallback: string): string {
+	for (const name of names) {
+		const value = process.env[name];
+		if (value && value.length > 0) {
+			return value;
+		}
+	}
+	return fallback;
+}
+
+function apiPodName(): string {
+	return firstRuntimeName(['POD_NAME', 'HOSTNAME'], hostname());
+}
+
+export async function timeRpcStep<T>(steps: RpcTimingSteps, name: string, operation: () => Promise<T>): Promise<T> {
+	const startedAtNs = startRpcTiming();
+	try {
+		return await operation();
+	} finally {
+		steps[name] = createRpcTimingNode(startedAtNs);
+	}
+}
+
+export function timeRpcStepSync<T>(steps: RpcTimingSteps, name: string, operation: () => T): T {
+	const startedAtNs = startRpcTiming();
+	try {
+		return operation();
+	} finally {
+		steps[name] = createRpcTimingNode(startedAtNs);
+	}
+}
+
+export class RpcTimingRecorder {
+	private readonly startedAtNs = startRpcTiming();
+	private readonly steps: RpcTimingSteps = {};
+
+	async time<T>(name: string, operation: () => Promise<T>): Promise<T> {
+		return await timeRpcStep(this.steps, name, operation);
+	}
+
+	timeSync<T>(name: string, operation: () => T): T {
+		return timeRpcStepSync(this.steps, name, operation);
+	}
+
+	record(name: string, startedAtNs: bigint, steps?: RpcTimingSteps): void {
+		this.steps[name] = createRpcTimingNode(startedAtNs, steps);
+	}
+
+	recordNode(name: string, node: RpcTimingNode): void {
+		this.steps[name] = node;
+	}
+
+	finalize(): RpcSessionTimings {
+		const podName = apiPodName();
+		return {
+			unit: 'microseconds',
+			total_us: elapsedRpcTimingUs(this.startedAtNs),
+			pod_name: podName,
+			steps: this.steps,
+		};
+	}
+}

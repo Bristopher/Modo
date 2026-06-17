@@ -1,0 +1,40 @@
+{
+	"name": "@pkgs/media_proxy_utils",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": {
+			"import": "./src/MediaProxyUtils.ts",
+			"types": "./src/MediaProxyUtils.ts"
+		},
+		"./src/MediaProxyUtils": {
+			"import": "./src/MediaProxyUtils.ts",
+			"types": "./src/MediaProxyUtils.ts"
+		},
+		"./src/ExternalMediaProxyUrlBuilder": {
+			"import": "./src/ExternalMediaProxyUrlBuilder.ts",
+			"types": "./src/ExternalMediaProxyUrlBuilder.ts"
+		},
+		"./src/ExternalMediaProxyPathCodec": {
+			"import": "./src/ExternalMediaProxyPathCodec.ts",
+			"types": "./src/ExternalMediaProxyPathCodec.ts"
+		},
+		"./src/MediaProxySigner": {
+			"import": "./src/MediaProxySigner.ts",
+			"types": "./src/MediaProxySigner.ts"
+		},
+		"./*": "./*"
+	},
+	"main": "./src/MediaProxyUtils.ts",
+	"types": "./src/MediaProxyUtils.ts",
+	"scripts": {
+		"typecheck": "tsgo --noEmit"
+	},
+	"dependencies": {
+		"@types/node": "catalog:"
+	},
+	"devDependencies": {
+		"@typescript/native-preview": "catalog:"
+	}
+}
