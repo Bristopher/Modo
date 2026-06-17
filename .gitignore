@@ -1,3 +1,10 @@
+# Self-host: local-only / generated / SECRET files — never commit
+.history/
+.myArchive/
+.vscode/commands/
+config/config.json
+unraid/config/
+
 *.tsbuildinfo
 **/*.beam
 **/*.css.d.ts
