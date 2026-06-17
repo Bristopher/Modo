@@ -119,6 +119,17 @@ module.exports = {
 		deleteAppDataOnUninstall: false,
 		createDesktopShortcut: true,
 		createStartMenuShortcut: true,
+		// Self-host patch: Modo installer branding. icon.ico drives the installer/uninstaller +
+		// header icon (regenerate it to Modo first — see build-and-deploy.md). The purple wizard
+		// sidebar/header .bmp images are OPTIONAL polish: generate them (ImageMagick commands in the
+		// doc) then uncomment the lines below — referencing a missing .bmp fails the build.
+		installerIcon: `build_resources/${iconDir}/icon.ico`,
+		uninstallerIcon: `build_resources/${iconDir}/icon.ico`,
+		installerHeaderIcon: `build_resources/${iconDir}/icon.ico`,
+		runAfterFinish: true,
+		// installerSidebar: `build_resources/${iconDir}/installerSidebar.bmp`,
+		// uninstallerSidebar: `build_resources/${iconDir}/installerSidebar.bmp`,
+		// installerHeader: `build_resources/${iconDir}/installerHeader.bmp`,
 	},
 
 	squirrelWindows: {

@@ -211,6 +211,7 @@ try {
         $brandLines = @"
 base.productName = $brandJson;          // distinct install dir / exe / Start Menu name
 base.appId = '$appIdOverride';          // distinct Windows app identity
+base.extraMetadata = Object.assign({}, base.extraMetadata, { name: '$slug' }); // clean package name (drops _canary)
 "@
     }
     # Generate a custom NSIS include that (a) ALWAYS force-closes a running
