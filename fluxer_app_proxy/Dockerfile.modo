@@ -1,0 +1,126 @@
+# Self-contained build of the Modo web client (patched SPA + app-proxy) in ONE `docker build`.
+#
+# Merges two upstream Dockerfiles so you need NO local toolchain (no pnpm/node/rust) — only Docker:
+#   - the SPA `app-build` stage from fluxer_server/Dockerfile (Rust->WASM, wasm-pack, config baking)
+#   - the serving stages from fluxer_app_proxy/Dockerfile (the self-hosted app-proxy)
+# Carries client patches C1 (upload stall watchdog) + C2 (download button) via the source in this tree.
+#
+# Build from the REPO ROOT (build context must be the monorepo root, not this folder):
+#   docker build -f fluxer_app_proxy/Dockerfile.modo \
+#     -t DockerRegistry3:5000/fluxer-app-proxy-self-hosted:modo .
+#   docker push DockerRegistry3:5000/fluxer-app-proxy-self-hosted:modo
+# (Use 192.168.1.200:5024 instead of DockerRegistry3:5000 if building off-bignet, e.g. a LAN PC.)
+#
+# The modo domain is baked into the SPA endpoints via FLUXER_BUILD_CONFIG below. Change it + rebuild
+# if the domain ever changes.
+
+ARG BUILD_SHA
+ARG BUILD_NUMBER
+ARG BUILD_TIMESTAMP
+ARG RELEASE_CHANNEL=stable
+
+FROM node:24-bookworm-slim AS base
+WORKDIR /usr/src/app
+RUN corepack enable && corepack prepare pnpm@10.26.0 --activate
+
+# ---------------------------------------------------------------------------
+# Full workspace deps (needed to build the SPA)
+# ---------------------------------------------------------------------------
+FROM base AS fulldeps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+	curl python3 make g++ ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY patches/ ./patches/
+COPY packages/ ./packages/
+COPY fluxer_app/package.json ./fluxer_app/
+RUN pnpm install --frozen-lockfile
+RUN pnpm approve-builds msgpackr-extract@3.0.3 @parcel/watcher@2.5.6 || true
+RUN pnpm rebuild msgpackr-extract @parcel/watcher || true
+
+# ---------------------------------------------------------------------------
+# app-build: compile the PATCHED SPA -> fluxer_app/dist  (mirrors fluxer_server app-build stage)
+# ---------------------------------------------------------------------------
+FROM fulldeps AS app-build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+	curl ca-certificates build-essential && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+	--default-toolchain stable --profile minimal && \
+	. "$HOME/.cargo/env" && rustup target add wasm32-unknown-unknown
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN curl -fsSL https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.14.0/wasm-pack-v0.14.0-x86_64-unknown-linux-musl.tar.gz \
+	-o /tmp/wasm-pack.tgz && \
+	echo "278a8d668085821f4d1a637bd864f1713f872b0ae3a118c77562a308c0abfe8d  /tmp/wasm-pack.tgz" | sha256sum -c - && \
+	tar xz -C /tmp -f /tmp/wasm-pack.tgz && \
+	install -m755 /tmp/wasm-pack-v0.14.0-x86_64-unknown-linux-musl/wasm-pack /usr/local/bin/wasm-pack && \
+	rm -rf /tmp/wasm-pack* && wasm-pack --version
+
+# Bakes the Modo endpoint URLs (api/gateway/media/static) into the SPA bundle. Must match runtime.
+ARG FLUXER_BUILD_CONFIG="{\"domain\":{\"base_domain\":\"modo.bigweld.duckdns.org\",\"public_scheme\":\"https\",\"public_port\":443}}"
+RUN echo "$FLUXER_BUILD_CONFIG" > /tmp/fluxer-build-config.json
+ENV FLUXER_CONFIG=/tmp/fluxer-build-config.json
+
+COPY tsconfigs /usr/src/app/tsconfigs
+COPY packages/ ./packages/
+RUN pnpm --filter @fluxer/config generate
+COPY fluxer_app/ ./fluxer_app/
+RUN rm -f node_modules/.bin/wasm-pack fluxer_app/node_modules/.bin/wasm-pack
+RUN cd fluxer_app && pnpm build
+
+# ---------------------------------------------------------------------------
+# app-proxy prod deps + generated config schema (from fluxer_app_proxy/Dockerfile)
+# ---------------------------------------------------------------------------
+FROM base AS generator
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches/ ./patches/
+COPY packages/config/ ./packages/config/
+COPY packages/constants/ ./packages/constants/
+RUN pnpm install --frozen-lockfile --filter @fluxer/config...
+RUN pnpm --filter @fluxer/config generate
+
+FROM base AS proxydeps
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches/ ./patches/
+COPY packages/ ./packages/
+COPY fluxer_app_proxy/package.json ./fluxer_app_proxy/
+RUN pnpm install --frozen-lockfile --prod
+
+# ---------------------------------------------------------------------------
+# Final image: the self-hosted app-proxy serving our patched SPA bundle
+# ---------------------------------------------------------------------------
+FROM node:24-bookworm-slim
+ARG BUILD_SHA
+ARG BUILD_NUMBER
+ARG BUILD_TIMESTAMP
+ARG RELEASE_CHANNEL
+WORKDIR /usr/src/app/fluxer_app_proxy
+RUN apt-get update && apt-get install -y --no-install-recommends \
+	ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN corepack enable && corepack prepare pnpm@10.26.0 --activate
+
+COPY --from=proxydeps /usr/src/app/node_modules /usr/src/app/node_modules
+COPY --from=proxydeps /usr/src/app/fluxer_app_proxy/node_modules ./node_modules
+COPY --from=proxydeps /usr/src/app/packages /usr/src/app/packages
+COPY --from=generator /usr/src/app/packages/config/src/ConfigSchema.json /usr/src/app/packages/config/src/ConfigSchema.json
+COPY --from=generator /usr/src/app/packages/config/src/MasterZodSchema.generated.tsx /usr/src/app/packages/config/src/MasterZodSchema.generated.tsx
+COPY tsconfigs /usr/src/app/tsconfigs
+COPY fluxer_app_proxy/package.json ./
+COPY fluxer_app_proxy/tsconfig.json ./
+COPY fluxer_app_proxy/src ./src
+
+# The patched SPA bundle (built above) — this is what carries C1/C2.
+COPY --from=app-build /usr/src/app/fluxer_app/dist/ ./assets/
+
+RUN mkdir -p /usr/src/app/.cache/corepack && chown -R nobody:nogroup /usr/src/app
+ENV HOME=/usr/src/app
+ENV COREPACK_HOME=/usr/src/app/.cache/corepack
+ENV NODE_ENV=production
+ENV PORT=8080
+ENV BUILD_SHA=${BUILD_SHA}
+ENV BUILD_NUMBER=${BUILD_NUMBER}
+ENV BUILD_TIMESTAMP=${BUILD_TIMESTAMP}
+ENV RELEASE_CHANNEL=${RELEASE_CHANNEL}
+USER nobody
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+	CMD curl -f http://localhost:8080/_health || exit 1
+CMD ["pnpm", "start"]

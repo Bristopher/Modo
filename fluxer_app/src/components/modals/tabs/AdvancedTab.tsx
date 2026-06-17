@@ -86,10 +86,10 @@ const AdvancedTab: React.FC = observer(() => {
 			{isDesktop() && (
 				<SettingsTabSection
 					title={<Trans>Desktop Startup</Trans>}
-					description={<Trans>Run Fluxer automatically when your computer starts. Or don't. Your choice!</Trans>}
+					description={<Trans>Run Modo automatically when your computer starts. Or don't. Your choice!</Trans>}
 				>
 					<Switch
-						label={<Trans>Launch Fluxer at Login</Trans>}
+						label={<Trans>Launch Modo at Login</Trans>}
 						description={<Trans>Applies only to the desktop app on this device.</Trans>}
 						value={platform === 'macos' ? autostartEnabled : false}
 						disabled={platform !== 'macos' || autostartBusy}
@@ -106,7 +106,7 @@ const AdvancedTab: React.FC = observer(() => {
 				<SettingsTabSection
 					title={<Trans>Desktop Window</Trans>}
 					description={
-						<Trans>Choose what Fluxer remembers about your window between restarts and reloads on this device.</Trans>
+						<Trans>Choose what Modo remembers about your window between restarts and reloads on this device.</Trans>
 					}
 				>
 					<Switch
@@ -117,7 +117,7 @@ const AdvancedTab: React.FC = observer(() => {
 					/>
 					<Switch
 						label={<Trans>Restore Maximized</Trans>}
-						description={<Trans>Reopen in maximized mode if that&rsquo;s how you last used Fluxer.</Trans>}
+						description={<Trans>Reopen in maximized mode if that&rsquo;s how you last used Modo.</Trans>}
 						value={NativeWindowStateStore.rememberMaximized}
 						onChange={NativeWindowStateStore.setRememberMaximized}
 					/>

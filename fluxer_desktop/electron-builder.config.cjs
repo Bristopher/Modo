@@ -19,10 +19,12 @@
 
 const isCanary = process.env.BUILD_CHANNEL === 'canary';
 
-const productName = isCanary ? 'Fluxer Canary' : 'Fluxer';
-const appId = isCanary ? 'app.fluxer.canary' : 'app.fluxer';
+// Self-host patch: Modo branding. (The Build-FluxerDesktop.ps1 -Brand arg can still override
+// productName/appId at build time; these are the defaults for a plain build.)
+const productName = isCanary ? 'Modo Canary' : 'Modo';
+const appId = isCanary ? 'app.modo.canary' : 'app.modo';
 const iconDir = isCanary ? 'icons-canary' : 'icons-stable';
-const packageName = isCanary ? 'fluxer_desktop_canary' : 'fluxer_desktop';
+const packageName = isCanary ? 'modo_desktop_canary' : 'modo_desktop';
 
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
@@ -75,9 +77,9 @@ module.exports = {
 			},
 		],
 		extendInfo: {
-			NSMicrophoneUsageDescription: 'Fluxer needs access to your microphone to enable voice chat features.',
-			NSCameraUsageDescription: 'Fluxer needs access to your camera to enable video chat features.',
-			NSAppleEventsUsageDescription: 'Fluxer needs access to Apple Events for automation features.',
+			NSMicrophoneUsageDescription: 'Modo needs access to your microphone to enable voice chat features.',
+			NSCameraUsageDescription: 'Modo needs access to your camera to enable video chat features.',
+			NSAppleEventsUsageDescription: 'Modo needs access to Apple Events for automation features.',
 		},
 	},
 
@@ -149,7 +151,7 @@ module.exports = {
 			Name: productName,
 			Comment: 'Instant messaging and VoIP application',
 			Categories: 'Network;InstantMessaging;',
-			StartupWMClass: isCanary ? 'fluxer-canary' : 'fluxer',
+			StartupWMClass: isCanary ? 'modo-canary' : 'modo',
 		},
 	},
 

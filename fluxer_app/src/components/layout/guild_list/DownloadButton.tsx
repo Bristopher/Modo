@@ -31,6 +31,11 @@ import {motion} from 'framer-motion';
 import {observer} from 'mobx-react-lite';
 import {useRef} from 'react';
 
+// Self-host patch: point the in-app "Download" button at our own desktop-app release page instead
+// of fluxer.app/download. Edit this single constant to your GitHub Releases URL (the `/releases/latest`
+// page always resolves to the newest published installer).
+const MODO_DOWNLOAD_URL = 'https://github.com/Bristopher/Modo/releases/latest';
+
 export const DownloadButton = observer(() => {
 	const {t} = useLingui();
 	const [hoverRef, isHovering] = useHover();
@@ -39,7 +44,7 @@ export const DownloadButton = observer(() => {
 	const mergedButtonRef = useMergeRefs([hoverRef, buttonRef]);
 
 	const handleDownload = () => {
-		openExternalUrl('https://fluxer.app/download');
+		openExternalUrl(MODO_DOWNLOAD_URL);
 	};
 
 	return (

@@ -183,20 +183,21 @@ export function createApplicationMenu(): void {
 			{
 				label: 'Website',
 				click: async () => {
-					await shell.openExternal('https://fluxer.app');
+					// Self-host patch: Modo instance + repo links.
+					await shell.openExternal('https://modo.bigweld.duckdns.org');
 				},
 			},
 			{
 				label: 'GitHub',
 				click: async () => {
-					await shell.openExternal('https://github.com/fluxerapp/fluxer');
+					await shell.openExternal('https://github.com/Bristopher/Modo');
 				},
 			},
 			{type: 'separator'},
 			{
 				label: 'Report Issue',
 				click: async () => {
-					await shell.openExternal('https://github.com/fluxerapp/fluxer/issues');
+					await shell.openExternal('https://github.com/Bristopher/Modo/issues');
 				},
 			},
 		],

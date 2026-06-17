@@ -17,9 +17,12 @@
  * along with Fluxer. If not, see <https://www.gnu.org/licenses/>.
  */
 
-export const APP_PROTOCOL = 'fluxerbigweld';
-export const STABLE_APP_URL = 'https://fluxer.bigweld.duckdns.org';
-export const CANARY_APP_URL = 'https://fluxer.bigweld.duckdns.org';
+// Self-host patch: brand + default server for the Modo desktop build. APP_PROTOCOL is the custom
+// URL scheme registered with the OS for deep links (must be unique per install). Both STABLE and
+// CANARY point at our self-hosted instance; users can still switch servers from the app's settings.
+export const APP_PROTOCOL = 'fluxermodo';
+export const STABLE_APP_URL = 'https://modo.bigweld.duckdns.org';
+export const CANARY_APP_URL = 'https://modo.bigweld.duckdns.org';
 export const DEFAULT_WINDOW_WIDTH = 1280;
 export const DEFAULT_WINDOW_HEIGHT = 800;
 export const MIN_WINDOW_WIDTH = 800;

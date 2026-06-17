@@ -64,7 +64,9 @@ const CONFIG: Config = {
 	families: {
 		neutralDark: {hue: 220, saturation: 13, useSaturationFactor: true},
 		neutralLight: {hue: 220, saturation: 10, useSaturationFactor: true},
-		brand: {hue: 242, saturation: 70, useSaturationFactor: true},
+		// Self-host patch: Modo brand color (#B46BFA ≈ hue 271, high saturation) — shifts the whole
+		// brand ramp from Fluxer blurple to Modo purple.
+		brand: {hue: 271, saturation: 88, useSaturationFactor: true},
 		link: {hue: 210, saturation: 100, useSaturationFactor: true},
 		accentPurple: {hue: 270, saturation: 80, useSaturationFactor: true},
 		statusOnline: {hue: 142, saturation: 76, useSaturationFactor: true},

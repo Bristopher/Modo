@@ -750,16 +750,52 @@ export class HttpClient {
 				xhr.responseType = 'blob';
 			}
 
-			// Self-host patch: file uploads (multipart/binary bodies) are bandwidth-bound, not
-			// latency-bound: a large attachment can legitimately take far longer than the default
-			// request timeout to stream. The 30s default aborts big uploads mid-flight. Rather than
-			// removing the deadline entirely (which would let a half-open dead connection sit
-			// open), give uploads a generous bounded ceiling so there is still an upper limit.
+			// Self-host patch: large attachment uploads are bandwidth-bound, not latency-bound, so the
+			// default 30s request timeout aborts big files mid-flight. An unbounded timeout is also
+			// wrong (a dead half-open socket would hang for hours and could stack into ghost requests).
+			// Instead we use a stall watchdog on upload bodies: as long as data keeps flowing at or
+			// above a minimum throughput the request runs as long as it needs, but if throughput drops
+			// below the floor for the whole grace window we abort. A generous absolute ceiling is the
+			// final backstop. Normal (non-upload) requests keep the configured timeout unchanged.
 			const isUploadBody = body instanceof FormData || body instanceof Blob || body instanceof ArrayBuffer;
-			const UPLOAD_TIMEOUT_MS = 60 * 60 * 1000; // 1h, matches the reverse-proxy body timeout
-			const effectiveTimeout = isUploadBody ? UPLOAD_TIMEOUT_MS : config.timeout;
-			if (effectiveTimeout && effectiveTimeout > 0) {
-				xhr.timeout = effectiveTimeout;
+			if (isUploadBody) {
+				const STALL_GRACE_MS = 30_000; // throughput may stay below the floor this long before we cut
+				const MIN_THROUGHPUT_BYTES_PER_SEC = 1024 * 1024; // 1 MB/s floor (tune for slow uplinks)
+				const ABSOLUTE_CEILING_MS = 6 * 60 * 60 * 1000; // 6h hard backstop
+
+				xhr.timeout = ABSOLUTE_CEILING_MS;
+
+				let windowStartTs = Date.now();
+				let windowStartLoaded = 0;
+				let lastLoaded = 0;
+
+				xhr.upload.addEventListener('progress', (event) => {
+					lastLoaded = event.loaded;
+				});
+
+				const stallTimer = window.setInterval(() => {
+					const elapsedSec = (Date.now() - windowStartTs) / 1000;
+					if (elapsedSec < STALL_GRACE_MS / 1000) {
+						return;
+					}
+					const rate = (lastLoaded - windowStartLoaded) / elapsedSec;
+					if (rate < MIN_THROUGHPUT_BYTES_PER_SEC) {
+						this.log.warn(
+							`Upload stalled (${Math.round(rate / 1024)} KB/s below ${Math.round(
+								MIN_THROUGHPUT_BYTES_PER_SEC / 1024,
+							)} KB/s floor over ${Math.round(elapsedSec)}s) — aborting`,
+						);
+						xhr.abort();
+						return;
+					}
+					// Throughput healthy: slide the measurement window forward and keep the upload alive.
+					windowStartTs = Date.now();
+					windowStartLoaded = lastLoaded;
+				}, 5_000);
+
+				xhr.addEventListener('loadend', () => window.clearInterval(stallTimer));
+			} else if (config.timeout && config.timeout > 0) {
+				xhr.timeout = config.timeout;
 			}
 
 			for (const [name, value] of Object.entries(headers)) {
